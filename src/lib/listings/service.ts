@@ -1,0 +1,86 @@
+import { and, desc, eq, type SQL } from "drizzle-orm";
+import { getDb, type Db } from "../db";
+import { nextListingId } from "../db/ids";
+import { listings, type ListingRow } from "../db/schema";
+import type { CreateListingInput, Listing, ListingStatus, MarketplaceId } from "../types";
+
+export interface ListingFilter {
+  marketplaceId?: MarketplaceId;
+  status?: ListingStatus;
+  sellerId?: string;
+}
+
+function toListing(row: ListingRow): Listing {
+  return {
+    id: row.id,
+    marketplaceId: row.marketplaceId,
+    sellerId: row.sellerId,
+    title: row.title,
+    description: row.description,
+    priceCents: row.priceCents,
+    currency: row.currency,
+    location: row.location,
+    status: row.status,
+    visibility: row.visibility,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+/** Creates an `available` listing with a minted `D{n}` id. Throws on non-positive / non-integer price. */
+export async function createListing(input: CreateListingInput, db?: Db): Promise<Listing> {
+  if (!Number.isInteger(input.priceCents) || input.priceCents <= 0) {
+    throw new Error("priceCents must be a positive integer");
+  }
+  const conn = db ?? (await getDb());
+  const id = await nextListingId(conn);
+  const [row] = await conn
+    .insert(listings)
+    .values({
+      id,
+      sellerId: input.sellerId,
+      marketplaceId: input.marketplaceId,
+      title: input.title,
+      description: input.description ?? null,
+      priceCents: input.priceCents,
+      currency: input.currency ?? "USD",
+      location: input.location ?? null,
+      visibility: input.visibility ?? "cross_market",
+    })
+    .returning();
+  return toListing(row);
+}
+
+/** Newest first. */
+export async function listListings(filter: ListingFilter = {}, db?: Db): Promise<Listing[]> {
+  const conn = db ?? (await getDb());
+  const conditions: SQL[] = [];
+  if (filter.marketplaceId) conditions.push(eq(listings.marketplaceId, filter.marketplaceId));
+  if (filter.status) conditions.push(eq(listings.status, filter.status));
+  if (filter.sellerId) conditions.push(eq(listings.sellerId, filter.sellerId));
+  const rows = await conn
+    .select()
+    .from(listings)
+    .where(and(...conditions))
+    .orderBy(desc(listings.createdAt), desc(listings.id));
+  return rows.map(toListing);
+}
+
+export async function getListing(id: string, db?: Db): Promise<Listing | null> {
+  const conn = db ?? (await getDb());
+  const [row] = await conn.select().from(listings).where(eq(listings.id, id)).limit(1);
+  return row ? toListing(row) : null;
+}
+
+export async function updateListingStatus(
+  id: string,
+  status: ListingStatus,
+  db?: Db,
+): Promise<Listing | null> {
+  const conn = db ?? (await getDb());
+  const [row] = await conn
+    .update(listings)
+    .set({ status, updatedAt: new Date() })
+    .where(eq(listings.id, id))
+    .returning();
+  return row ? toListing(row) : null;
+}
