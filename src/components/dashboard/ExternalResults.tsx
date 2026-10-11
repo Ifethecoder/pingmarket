@@ -2,14 +2,18 @@
 
 import { useState } from "react";
 import type { DarwinCapabilityResult, DarwinReadiness, DarwinSearchOutcome } from "@/lib/types";
+import { AskAgent } from "./AskAgent";
 import { Chip, type Tone } from "./ui";
 
 export function ExternalResults({
   darwin,
   capabilities,
+  query,
 }: {
   darwin: DarwinSearchOutcome;
   capabilities: DarwinCapabilityResult[];
+  /** The buyer's search text, used to prefill the Darwin Act message. */
+  query: string;
 }) {
   return (
     <section
@@ -47,7 +51,7 @@ export function ExternalResults({
         <ol className="flex flex-col gap-2.5">
           {capabilities.map((c) => (
             <li key={`${c.agentId}:${c.capabilityId}`}>
-              <CapabilityCard cap={c} />
+              <CapabilityCard cap={c} searchId={darwin.searchId} query={query} />
             </li>
           ))}
         </ol>
@@ -118,7 +122,7 @@ const readinessTone: Record<DarwinReadiness, Tone> = {
   unavailable: "neutral",
 };
 
-function CapabilityCard({ cap }: { cap: DarwinCapabilityResult }) {
+function CapabilityCard({ cap, searchId, query }: { cap: DarwinCapabilityResult; searchId: string | null; query: string }) {
   const [expanded, setExpanded] = useState(false);
   const [clamped, setClamped] = useState(false);
   const descId = `cap-desc-${cap.capabilityId}`;
@@ -227,6 +231,14 @@ function CapabilityCard({ cap }: { cap: DarwinCapabilityResult }) {
         >
           View on Darwin index ↗
         </a>
+        {searchId && (
+          <AskAgent
+            searchId={searchId}
+            agentId={cap.agentId}
+            capabilityId={cap.capabilityId}
+            defaultMessage={actMessage(query)}
+          />
+        )}
       </div>
       {cap.connectionPrompt && (
         <details className="group mt-1.5">
@@ -270,4 +282,8 @@ function Facts({
       )}
     </div>
   );
+}
+
+function actMessage(query: string): string {
+  return `Read-only request from a PingMarket buyer: "${query.trim()}". Reply with what you can offer, including prices if you have them. Do not purchase, reserve, or charge anything.`;
 }

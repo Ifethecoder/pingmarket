@@ -240,7 +240,7 @@ export function SearchPanel({
               )}
             </p>
             <NativeResults results={result.nativeListings} marketplaces={marketplaces} onOfferSent={onOfferSent} />
-            <ExternalResults darwin={result.darwin} capabilities={result.externalCapabilities} />
+            <ExternalResults darwin={result.darwin} capabilities={result.externalCapabilities} query={result.query} />
             {result.darwin.responseId && (
               <FollowUpBox
                 darwin={result.darwin}

@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import Stripe from "stripe";
-import { internalError, jsonError } from "@/lib/http";
-import { ORDER_ERROR_STATUS, OrderError } from "@/lib/orders/service";
+import { OrderError } from "@/lib/orders/service";
+import { paymentErrorResponse } from "@/lib/payments/route-errors";
 import { startCheckout } from "@/lib/payments/stripe";
 
 /**
@@ -24,7 +23,8 @@ function appOrigin(req: Request): string {
 
 /**
  * POST /api/orders/{id}/checkout → `{ url, sessionId }` for a hosted Stripe test-mode Checkout page.
- * Reuses the order's session while it is still open. Never marks the order paid (only the webhook does).
+ * Reuses the order's session while it is still open. Never marks the order paid from the link itself;
+ * a `complete` stored session is confirmed with Stripe first (409 `ORDER_NOT_PENDING` "Order already paid").
  * 503 `STRIPE_NOT_CONFIGURED` / `APP_URL_REQUIRED`; 409 `ORDER_NOT_PENDING` (paid), `PAYMENT_PROCESSING`
  * (paid on Stripe, webhook pending), `LISTING_UNAVAILABLE`; 400 `STRIPE_INVALID_REQUEST`; 502 `STRIPE_ERROR`.
  */
@@ -34,17 +34,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const { url, sessionId } = await startCheckout(id, { origin: appOrigin(req) });
     return NextResponse.json({ url, sessionId });
   } catch (err) {
-    if (err instanceof OrderError) {
-      return jsonError(ORDER_ERROR_STATUS[err.code], err.message, { code: err.code });
-    }
-    if (err instanceof Stripe.errors.StripeError) {
-      // Never log the raw Stripe error object: it carries request details.
-      console.error(`[api] POST /api/orders/[id]/checkout Stripe ${err.type} ${err.code ?? "-"}: ${err.message}`);
-      if (err instanceof Stripe.errors.StripeInvalidRequestError) {
-        return jsonError(400, err.message, { code: "STRIPE_INVALID_REQUEST" });
-      }
-      return jsonError(502, "Stripe request failed", { code: "STRIPE_ERROR" });
-    }
-    return internalError("POST /api/orders/[id]/checkout", err);
+    return paymentErrorResponse("POST /api/orders/[id]/checkout", err);
   }
 }

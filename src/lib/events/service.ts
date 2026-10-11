@@ -47,16 +47,25 @@ export async function listTraceEvents(limit = 50, db?: Db): Promise<TraceEvent[]
   ]);
 
   const events: TraceEvent[] = [
-    ...messageRows.map(
-      (m): TraceEvent => ({
+    ...messageRows.map((m): TraceEvent => {
+      // `sim_` rows come from the /sim handsets (src/lib/sms/simulator.ts) and `dev_` rows from the local
+      // /api/dial/simulate-inbound helper; everything else is the real phone over Dial
+      // (src/lib/sms/inbound.ts / outbound.ts).
+      const simulated = m.dialEventId.startsWith("sim_") || m.dialEventId.startsWith("dev_");
+      return {
         id: `message:${m.id}`,
         at: m.createdAt.toISOString(),
         kind: m.direction === "inbound" ? "sms_inbound" : "sms_outbound",
-        // `sim_` rows come from the /sim handsets (src/lib/sms/simulator.ts), never from Dial.
-        summary: `${m.dialEventId.startsWith("sim_") ? "SIM " : ""}${maskPhone(m.fromNumber)} → ${maskPhone(m.toNumber)}: ${truncate(m.body, 120)}`,
-        detail: { messageId: m.id, dialEventId: m.dialEventId, direction: m.direction, simulated: m.dialEventId.startsWith("sim_") },
-      }),
-    ),
+        summary: `${simulated ? "SIM" : "SMS"} ${maskPhone(m.fromNumber)} → ${maskPhone(m.toNumber)}: ${truncate(m.body, 120)}`,
+        detail: {
+          messageId: m.id,
+          dialEventId: m.dialEventId,
+          direction: m.direction,
+          channel: simulated ? "sim" : "dial",
+          simulated,
+        },
+      };
+    }),
     ...listingRows.map(
       ({ listing: l, marketplaceName }): TraceEvent => ({
         id: `listing:${l.id}`,

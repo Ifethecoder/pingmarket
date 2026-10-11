@@ -1,17 +1,22 @@
-/** Route-level tests for POST /api/stripe/webhook and POST /api/orders/{id}/checkout with real signed payloads. */
+/**
+ * Route-level tests for POST /api/stripe/webhook (real signed payloads), POST /api/orders,
+ * POST /api/orders/{id}/checkout and POST /api/orders/{id}/confirm.
+ */
 import { eq } from "drizzle-orm";
 import Stripe from "stripe";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { POST as checkoutPOST } from "@/app/api/orders/[id]/checkout/route";
+import { POST as confirmPOST } from "@/app/api/orders/[id]/confirm/route";
 import { POST as ordersPOST } from "@/app/api/orders/route";
 import { POST as webhookPOST } from "@/app/api/stripe/webhook/route";
 import type { Db } from "../db";
 import { offers } from "../db/schema";
 import { createTestDb } from "../db/testing";
-import { getListing } from "../listings/service";
+import { createListing, getListing } from "../listings/service";
 import { createOffer } from "../offers/service";
 import { attachCheckoutSession, getOrder, listOrders } from "../orders/service";
 import type { Order } from "../types";
+import { getStripe } from "./stripe";
 
 const state = vi.hoisted(() => ({ db: null as unknown }));
 vi.mock("@/lib/db", async (importOriginal) => ({
@@ -304,5 +309,88 @@ describe("POST /api/orders and /api/orders/{id}/checkout", () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toMatchObject({ code: "APP_URL_REQUIRED" });
     vi.stubEnv("NODE_ENV", "test");
+  });
+});
+
+describe("POST /api/orders/{id}/confirm", () => {
+  async function freshOrderWithSession(priceCents: number, sessionId: string | null) {
+    const listing = await createListing(
+      { sellerId: "u_seller_demo", marketplaceId: "creative", title: "Confirm test print", priceCents },
+      db,
+    );
+    const offer = await createOffer({ listingId: listing.id, priceCents }, db);
+    await db.update(offers).set({ status: "accepted" }).where(eq(offers.id, offer.id));
+    const res = await ordersPOST(
+      new Request("http://localhost/api/orders", { method: "POST", body: JSON.stringify({ offerId: offer.id }) }),
+    );
+    const { order } = (await res.json()) as { order: Order };
+    if (sessionId) await attachCheckoutSession(order.id, sessionId, null, db);
+    return order;
+  }
+
+  function confirm(orderId: string, body?: string) {
+    return confirmPOST(
+      new Request(`http://localhost/api/orders/${orderId}/confirm`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      }),
+      { params: Promise.resolve({ id: orderId }) },
+    );
+  }
+
+  it("confirms a paid session read from Stripe with the secret key (no webhook involved)", async () => {
+    vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_route_confirm");
+    vi.stubEnv("STRIPE_WEBHOOK_SECRET", ""); // the webhook is optional
+    const order = await freshOrderWithSession(4200, "cs_test_ConfirmRoute1");
+    const retrieve = vi.spyOn(getStripe().checkout.sessions, "retrieve").mockResolvedValue({
+      id: "cs_test_ConfirmRoute1",
+      object: "checkout.session",
+      status: "complete",
+      payment_status: "paid",
+      livemode: false,
+      client_reference_id: order.id,
+      metadata: { orderId: order.id },
+      amount_total: 4200,
+      currency: "usd",
+    } as unknown as Stripe.Response<Stripe.Checkout.Session>);
+    try {
+      const res = await confirm(order.id, JSON.stringify({ sessionId: "cs_test_ConfirmRoute1" }));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        confirmed: true,
+        sessionStatus: "complete",
+        paymentStatus: "paid",
+        order: { id: order.id, paymentStatus: "paid" },
+      });
+      expect(retrieve).toHaveBeenCalledWith("cs_test_ConfirmRoute1");
+
+      // Empty body is allowed; an already-paid order is answered without asking Stripe again.
+      retrieve.mockClear();
+      const again = await confirm(order.id);
+      expect(await again.json()).toMatchObject({ confirmed: true, order: { paymentStatus: "paid" } });
+      expect(retrieve).not.toHaveBeenCalled();
+    } finally {
+      retrieve.mockRestore();
+      vi.stubEnv("STRIPE_WEBHOOK_SECRET", SECRET);
+    }
+  });
+
+  it("validates the body and maps errors (404, 400, 503) and no_session", async () => {
+    const missing = await confirm("ORD_NOPE");
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toMatchObject({ code: "ORDER_NOT_FOUND" });
+
+    const order = await freshOrderWithSession(1800, null);
+    expect((await confirm(order.id, JSON.stringify({ sessionId: "https://evil.example" }))).status).toBe(400);
+    expect((await confirm(order.id, "{not json")).status).toBe(400);
+    const noSession = await confirm(order.id, "");
+    expect(await noSession.json()).toMatchObject({ confirmed: false, reason: "no_session" });
+
+    vi.stubEnv("STRIPE_SECRET_KEY", "");
+    const unconfigured = await confirm(order.id, JSON.stringify({ sessionId: "cs_test_whatever" }));
+    expect(unconfigured.status).toBe(503);
+    expect(await unconfigured.json()).toMatchObject({ code: "STRIPE_NOT_CONFIGURED" });
+    expect((await getOrder(order.id, db))?.paymentStatus).toBe("pending");
   });
 });

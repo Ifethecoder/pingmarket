@@ -1,5 +1,6 @@
 /**
- * Orders (PM-11): one order per accepted offer, paid only via a signed Stripe webhook.
+ * Orders (PM-11): one order per accepted offer, paid only once Stripe's own data confirms the payment
+ * (`applyPaidCheckoutSession` in `src/lib/payments/stripe.ts`).
  * Nothing here talks to Stripe; see `src/lib/payments/stripe.ts`.
  */
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
@@ -16,6 +17,7 @@ export type OrderErrorCode =
   | "LISTING_UNAVAILABLE"
   | "PAYMENT_PROCESSING"
   | "SESSION_MISMATCH"
+  | "SESSION_NOT_FOUND"
   | "STRIPE_NOT_CONFIGURED"
   | "APP_URL_REQUIRED";
 
@@ -28,6 +30,7 @@ export const ORDER_ERROR_STATUS: Record<OrderErrorCode, number> = {
   LISTING_UNAVAILABLE: 409,
   PAYMENT_PROCESSING: 409,
   SESSION_MISMATCH: 409,
+  SESSION_NOT_FOUND: 404,
   STRIPE_NOT_CONFIGURED: 503,
   APP_URL_REQUIRED: 503,
 };
@@ -105,7 +108,7 @@ export async function getOrCreateOrderForOffer(
 /**
  * Compare-and-swap of the order's Checkout Session id: succeeds only while the order is
  * `pending`/`failed` and still holds `expectedPrevious` (null = none). A `failed` order moves back
- * to `pending` (retry). Returns false when another request or the webhook changed the order first.
+ * to `pending` (retry). Returns false when another request or a payment confirmation changed the order first.
  */
 export async function attachCheckoutSession(
   orderId: string,
@@ -134,9 +137,10 @@ interface SessionRef {
 }
 
 /**
- * The ONLY path to `paid`; called from the verified Stripe webhook. A signed paid event is
- * authoritative, so a `pending`/`failed` order is marked paid and records the event's session id even
- * if a newer session was attached since (the buyer paid an older one). Idempotent: a duplicate
+ * The ONLY path to `paid`; called only by `applyPaidCheckoutSession` after it has checked a Checkout
+ * Session obtained from Stripe (secret-key retrieve or signed webhook). That session is authoritative,
+ * so a `pending`/`failed` order is marked paid and records its id even if a newer session was attached
+ * since (the buyer paid an older one). Idempotent: a duplicate
  * delivery returns `changed: false`. An already-paid order with a different session id throws
  * `SESSION_MISMATCH` (possible double payment; logged loudly). Marks the listing `sold` in the same
  * transaction.

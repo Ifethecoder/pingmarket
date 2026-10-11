@@ -39,7 +39,8 @@ describe("listTraceEvents", () => {
     expect(ats).toEqual([...ats].sort().reverse());
 
     const sms = events.find((e) => e.kind === "sms_inbound");
-    expect(sms?.summary).toBe("…0002 → …0001: SELL oak desk, $120, Berkeley. Pickup only.");
+    expect(sms?.summary).toBe("SMS …0002 → …0001: SELL oak desk, $120, Berkeley. Pickup only.");
+    expect(sms?.detail).toMatchObject({ channel: "dial", simulated: false });
     expect(sms?.summary).not.toContain("5550000002");
     expect(events.find((e) => e.id === "listing:D1")?.summary).toBe(
       "Listing D1 created: Oak desk — $120.00 (Furniture Market)",
@@ -79,5 +80,5 @@ describe("listTraceEvents orders", () => {
     expect(events.findIndex((e) => e.kind === "payment")).toBeLessThan(
       events.findIndex((e) => e.kind === "order_created"),
     );
-  });
+  }, 30_000); // boots its own PGlite in the test body
 });

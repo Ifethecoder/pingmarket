@@ -22,6 +22,10 @@ Live verification completed October 11, 2026: the signed webhook ping returned 2
 
 Changing `.env.local` requires a server restart. With sends disabled, PING replies remain pending; enabling sends later will process them. Do not delete the journal to fix a timeout or replay problem: it carries the deduplication and attempted-send history. `unknown` attempts require manual reconciliation with Dial history and are not automatically retried. A process interrupted during sending leaves an attempt that becomes unknown after five minutes, never a new pending send.
 
+## Marketplace webhook (Next app)
+
+The marketplace itself receives Dial SMS at `POST /api/dial/webhook` in the Next app (`src/app/api/dial/webhook/route.ts`), using the same `createDialWebhookHandler` with a durable inbox in the app database (`messages`, deduplicated on the Dial event id). `DIAL_PARTICIPANT_NUMBER` is the real **buyer** phone (`u_sms_buyer`): its SEARCH / DETAILS / OFFER / ACCEPT / DECLINE / AGENT / HELP / STOP texts are routed through the shared SMS gateway after the 200 is returned, and replies are sent from `DIAL_SERVICE_NUMBER` when `DIAL_SEND_ENABLED=true`. Run `npm run dev`, expose it with `cloudflared tunnel --url http://localhost:3000`, and point the `message.received` subscription at `https://<tunnel>/api/dial/webhook` instead of the standalone test server (use one subscription at a time, or both receivers will answer). `GET /api/dial/webhook` reports `{ configured, webhookReady, sendsEnabled }`. See the README section "Real SMS buyer over Dial". The standalone server below remains for connectivity checks.
+
 When finished, stop the tunnel and receiver and disable/delete the test webhook subscription in Dial. A restarted Quick Tunnel can have a different URL; update the subscription rather than accumulating duplicate subscriptions. Integrate A's handler with B's durable application adapter before the listing demo.
 
 Local verification: `npm run typecheck:messaging` and `npm run test:messaging`. Tests use fake provider transports, including restart/deduplication checks against temporary SQLite files; they send no SMS.

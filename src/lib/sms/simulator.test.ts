@@ -3,7 +3,8 @@ import type { Db } from "../db";
 import { createTestDb } from "../db/testing";
 import { listTraceEvents } from "../events/service";
 import { getListing } from "../listings/service";
-import { listOffers } from "../offers/service";
+import { createOffer, getOffer, listOffers } from "../offers/service";
+import { listOrders } from "../orders/service";
 import completedFixture from "../darwin/__fixtures__/completed.json";
 import {
   getSimHandset,
@@ -48,7 +49,7 @@ describe("simulateSms", () => {
     expect(inbound?.detail?.simulated).toBe(true);
   });
 
-  it("uses the seeded simulated seller, never the real Dial seller", async () => {
+  it("uses the seeded simulated seller, never the dashboard demo seller", async () => {
     const seller = await getSimHandset("seller", db);
     expect(seller.userId).toBe("u_seller_2");
     expect(seller.userId).not.toBe("u_seller_demo");
@@ -133,7 +134,7 @@ describe("simulateSms", () => {
     expect(sellerThread.at(-1)?.id).toBe(res.outbound[1].id);
   });
 
-  it("OFFER on the real Dial seller's listing sends no simulated notification", async () => {
+  it("OFFER on the dashboard demo seller's listing sends no simulated notification", async () => {
     const res = await simulateSms({ actor: "buyer", body: "OFFER D1 100" }, { db });
     expect(res.outbound).toHaveLength(1);
     expect(res.outbound[0].body).toMatch(/not on the simulated seller phone/);
@@ -156,11 +157,25 @@ describe("simulateSms", () => {
     expect(buyer.outbound[0].body).toMatch(/Only the seller phone/);
   });
 
-  it("ACCEPT/COUNTER/DECLINE report they are not wired without a negotiation port", async () => {
-    const res = await simulateSms({ actor: "seller", body: "ACCEPT O1" }, { db });
-    expect(res.outbound[0].body).toMatch(/isn't wired/);
-    const offers = await listOffers({}, db);
-    expect(offers.every((o) => o.status === "open")).toBe(true);
+  it("negotiates through the drizzle service by default: counter, accept, order, competing offers declined", async () => {
+    const first = await simulateSms({ actor: "buyer", body: "OFFER D6 40" }, { db });
+    const offerId = /Offer (O\d+) sent/.exec(first.outbound[0].body)![1];
+    const competing = await createOffer({ listingId: "D6", priceCents: 4500 }, db);
+
+    const notYours = await simulateSms({ actor: "seller", body: "ACCEPT O2" }, { db });
+    expect(notYours.outbound[0].body).toMatch(/Couldn't ACCEPT O2: Offer O2 isn't yours/);
+
+    const countered = await simulateSms({ actor: "seller", body: `COUNTER ${offerId} 55` }, { db });
+    expect(countered.outbound[0].body).toBe(`Offer ${offerId} is now countered at $55.00.`);
+    expect(countered.outbound[1].body).toMatch(new RegExp(`ACCEPT ${offerId}`));
+
+    const accepted = await simulateSms({ actor: "buyer", body: `ACCEPT ${offerId}` }, { db });
+    expect(accepted.outbound[0].body).toMatch(new RegExp(`^Accepted ${offerId} at \\$55\\.00 for D6\\. Order ORD\\d+ is pending payment\\.`));
+    expect(accepted.outbound[1].body).toMatch(/accepted at \$55\.00/);
+    expect((await getOffer(offerId, db))?.status).toBe("accepted");
+    expect((await getOffer(competing.id, db))?.status).toBe("declined");
+    expect((await getListing("D6", db))?.status).toBe("reserved");
+    expect((await listOrders(db)).some((o) => o.offerId === offerId && o.amountCents === 5500)).toBe(true);
   });
 
   it("routes negotiation through the port and notifies the counterpart", async () => {

@@ -130,6 +130,8 @@ function errorMessage(err: unknown): string {
       return err.status ? `Darwin Search returned HTTP ${err.status}.` : "Darwin Search returned an error.";
     case "CONTINUATION_INVALID":
       return "This Darwin follow-up is no longer valid (the earlier response expired or its continuation token is missing). Start a new search.";
+    case "NOT_CONFIGURED":
+      return "Darwin is not configured on this server.";
   }
 }
 

@@ -5,7 +5,8 @@ const nextConfig: NextConfig = {
   partialPrefetching: true,
   // PGlite (in-process Postgres used when DATABASE_URL is unset) ships wasm and
   // Node-specific loaders; keep it out of the server bundle.
-  serverExternalPackages: ["@electric-sql/pglite"],
+  // @getdial/sdk reads its own package.json via __dirname at load time, which breaks when bundled.
+  serverExternalPackages: ["@electric-sql/pglite", "@getdial/sdk"],
   turbopack: {
     rules: {
       "*.css": {

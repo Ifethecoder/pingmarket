@@ -45,7 +45,7 @@ export function ListingsPanel({ marketplaces, refreshToken }: { marketplaces: Ma
         </div>
       )}
       {listings.length === 0 ? (
-        !poll.loading && !poll.error && <EmptyNote>No listings yet. Text SELL … from Number B to create one.</EmptyNote>
+        !poll.loading && !poll.error && <EmptyNote>No listings yet. Text SELL … from the simulated seller phone at /sim to create one.</EmptyNote>
       ) : (
         <div className="max-h-[22rem] overflow-auto">
           <table className="w-full min-w-[30rem] border-collapse text-left text-xs">

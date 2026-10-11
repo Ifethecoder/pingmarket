@@ -27,7 +27,7 @@
 
 ### P1: Add only after P0 is working
 - Buyers opt in to alerts for saved interests; a new matching listing triggers an appropriate notification.
-- Stripe Checkout in test mode after an agreed price; a verified Stripe webhook changes order state to `paid`.
+- Stripe Checkout in test mode after an agreed price; Mark `paid` only after the server verifies the Checkout Session with Stripe using the secret key (on return from Checkout, on demand, or via an optional signed webhook); never on link generation or the redirect URL alone.
 - Keewano records structured events and a live query informs a user-facing decision.
 - Sparta independently verifies a supported payment/refund-agent workflow.
 - Alike preserves implementation decisions across coding-agent sessions, if access is granted.
@@ -90,7 +90,7 @@ Dial's SpeedHacks quickstart says that SMS is immediately supported **Dial-numbe
 3. Seller replies `COUNTER O7 110`.
 4. Buyer dashboard shows `$110 counteroffer`; buyer accepts.
 5. Negotiation transitions to `accepted` and an order is created with `$110` **pending payment**.
-6. If Stripe is implemented, generate a test-mode Checkout link. Mark `paid` only on a verified Stripe webhook, never when the link is generated or opened.
+6. If Stripe is implemented, generate a test-mode Checkout link. Mark `paid` only after the server verifies the Checkout Session with Stripe using the secret key (on return from Checkout, on demand, or via an optional signed webhook); never on link generation or the redirect URL alone.
 
 ### Journey D — Interest alert (P1)
 1. Buyer explicitly opts in: `ALERT: office chair, <=$100, Berkeley` (or checks an opt-in in dashboard).
@@ -112,7 +112,7 @@ Dial's SpeedHacks quickstart says that SMS is immediately supported **Dial-numbe
 | PM-08 | P0 | Search API contract | A sends normalized intent, B returns typed results; both work without each other's UI code | Both |
 | PM-09 | P0 | Demo dashboard | Live listings, queries, external results, negotiation state and SMS event trace appear | B |
 | PM-10 | P1 | Interest notifications | Only opt-in interests trigger matching notifications, with deduping/STOP support | A + B |
-| PM-11 | P1 | Stripe test checkout | One pending order -> test Checkout -> signed success webhook -> paid; no exposed card details in SMS | B |
+| PM-11 | P1 | Stripe test checkout | One pending order -> test Checkout -> server verifies the session with Stripe (secret key; optional signed webhook) -> paid; no exposed card details in SMS | B |
 | PM-12 | P1 | Keewano decision loop | Typed events are ingested and a live query changes an app decision or displayed recommendation | B |
 | PM-13 | P1 | Sparta verification | Reproducible, supported Stripe-operation test with before/after evidence | A or B after P0 |
 | PM-14 | P1 | Alike handoff | Shared coding-agent decision is recorded and surfaced in a separate session (access permitting) | Both |
@@ -288,7 +288,7 @@ Independent tests: Sparta Worlds | Dev coordination: Alike
 - **Consent:** Require opt-in before interest alerts, enforce `STOP`, avoid cold outreach, and keep the hackathon demo on permitted Dial-to-Dial messages.
 - **Negotiation:** Require listing ID and offer ID, participant authorization, an explicit price, clear expiry and idempotent state changes.
 - **Darwin:** Treat search results as capabilities, not verified products; show uncertainty and readiness; do not automatically execute provider actions or charge buyers.
-- **Stripe (P1):** Only hosted test-mode payment page; signed webhook is authoritative; no seller payout claims without Stripe Connect.
+- **Stripe (P1):** Only hosted test-mode payment page; Mark `paid` only after the server verifies the Checkout Session with Stripe using the secret key (on return from Checkout, on demand, or via an optional signed webhook); never on link generation or the redirect URL alone. No seller payout claims without Stripe Connect.
 - **Availability:** Mark listings sold/reserved consistently; an accepted offer must not enable two contradictory sales.
 
 ## 12. Final demo script (3–5 minutes)

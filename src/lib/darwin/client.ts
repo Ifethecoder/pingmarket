@@ -43,7 +43,9 @@ export type DarwinErrorCode =
   | "NETWORK"
   | "INVALID_RESPONSE"
   /** Follow-up rejected: expired `previousResponseId` or missing/invalid `X-Search-Token`. */
-  | "CONTINUATION_INVALID";
+  | "CONTINUATION_INVALID"
+  /** `DARWIN_API_KEY` missing (Act needs an account key). */
+  | "NOT_CONFIGURED";
 
 export class DarwinError extends Error {
   readonly code: DarwinErrorCode;

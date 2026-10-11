@@ -10,6 +10,7 @@ import type {
   SearchResponse,
 } from "@/lib/types";
 import type { TraceEvent } from "@/lib/events/types";
+import type { DarwinActView } from "@/lib/darwin/act";
 
 /** Error thrown by `apiFetch`; `message` is the server's `error` text or `HTTP {status}`. */
 export class ApiError extends Error {
@@ -97,6 +98,8 @@ export const postOffer = (body: Pick<CreateOfferRequest, "listingId" | "priceCen
 export const acceptOffer = (offerId: string) =>
   apiFetch<{ offer: Offer }>(`/api/offers/${encodeURIComponent(offerId)}/accept`, {
     method: "POST",
+    // JSON body so apiFetch sends content-type application/json (the route's CSRF guard requires it).
+    body: JSON.stringify({}),
   });
 
 export const counterOffer = (offerId: string, priceCents: number) =>
@@ -108,6 +111,8 @@ export const counterOffer = (offerId: string, priceCents: number) =>
 export const declineOffer = (offerId: string) =>
   apiFetch<{ offer: Offer }>(`/api/offers/${encodeURIComponent(offerId)}/decline`, {
     method: "POST",
+    // JSON body so apiFetch sends content-type application/json (the route's CSRF guard requires it).
+    body: JSON.stringify({}),
   });
 
 export const getOrders = () => apiFetch<{ orders: Order[] }>("/api/orders");
@@ -147,3 +152,28 @@ export const postSimSms = (body: { actor: SimActor; body: string; marketplaceId?
     method: "POST",
     body: JSON.stringify(body),
   });
+
+export interface ConfirmPaymentResponse {
+  order: Order;
+  confirmed: boolean;
+  sessionStatus: string | null;
+  paymentStatus: string | null;
+  reason?: string;
+}
+
+/** Server reads the Checkout Session from Stripe (secret key) and marks the order paid only if Stripe says so. */
+export const postConfirm = (orderId: string, sessionId?: string) =>
+  apiFetch<ConfirmPaymentResponse>(`/api/orders/${encodeURIComponent(orderId)}/confirm`, {
+    method: "POST",
+    body: JSON.stringify(sessionId ? { sessionId } : {}),
+  });
+
+// ---------------------------------------------------------------------------
+// Darwin Act (beta): one text message to an agent from a stored search, then poll its thread.
+// ---------------------------------------------------------------------------
+
+export const postDarwinAct = (body: { searchId: string; agentId: string; capabilityId: string; message: string }) =>
+  apiFetch<DarwinActView>("/api/darwin/act", { method: "POST", body: JSON.stringify(body) });
+
+export const getDarwinAct = (actRequestId: string) =>
+  apiFetch<DarwinActView>(`/api/darwin/act/${encodeURIComponent(actRequestId)}`);

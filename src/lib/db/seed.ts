@@ -2,7 +2,7 @@
  * Idempotent demo seed. Safe to run on every boot (onConflictDoNothing everywhere).
  * Listing ids D1..D8 are fixed; listing_id_seq is bumped to >= 100 so minted ids never collide.
  */
-import { sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import type { Db } from "./index";
 import { interests, listings, marketplaces, users } from "./schema";
 
@@ -91,7 +91,48 @@ const SEED_LISTINGS: NewListing[] = [
   },
 ];
 
+/** Fixed fake phone of the dashboard demo seller (never a real handset). */
+export const SELLER_DEMO_PHONE = "+15550000002";
+/** The real Dial participant phone (Number B) is the SMS buyer `u_sms_buyer`. */
+export const SMS_BUYER_ID = "u_sms_buyer";
+
+export function smsBuyerPhone(): string {
+  return process.env.DIAL_PARTICIPANT_NUMBER?.trim() || process.env.DIAL_NUMBER_B?.trim() || "+15550000011";
+}
+
+/**
+ * Older databases mapped the real participant phone to the seller `u_seller_demo`. users.phone is
+ * unique, so: free the fake seller phone from any other user, move the seller onto it, then point
+ * `u_sms_buyer` at the current participant phone. Returns the phone `u_sms_buyer` may hold (null when
+ * another user already has the participant phone). Idempotent; runs on every boot.
+ */
+async function reconcilePhones(db: Db, buyerPhone: string): Promise<string | null> {
+  const sellerPhone = buyerPhone === SELLER_DEMO_PHONE ? null : SELLER_DEMO_PHONE;
+  if (sellerPhone) {
+    await db.update(users).set({ phone: null }).where(and(eq(users.phone, sellerPhone), ne(users.id, "u_seller_demo")));
+  }
+  await db
+    .update(users)
+    .set({ phone: sellerPhone })
+    .where(and(eq(users.id, "u_seller_demo"), sql`${users.phone} is distinct from ${sellerPhone}::text`));
+  const [holder] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.phone, buyerPhone), ne(users.id, SMS_BUYER_ID)))
+    .limit(1);
+  if (holder) {
+    console.warn(`[seed] the participant phone is already used by ${holder.id}; ${SMS_BUYER_ID} keeps no phone`);
+    return null;
+  }
+  await db
+    .update(users)
+    .set({ phone: buyerPhone })
+    .where(and(eq(users.id, SMS_BUYER_ID), sql`${users.phone} is distinct from ${buyerPhone}::text`));
+  return buyerPhone;
+}
+
 export async function seed(db: Db): Promise<void> {
+  const buyerPhone = smsBuyerPhone();
   await db
     .insert(marketplaces)
     .values([
@@ -100,12 +141,13 @@ export async function seed(db: Db): Promise<void> {
     ])
     .onConflictDoNothing();
 
+  const smsBuyerPhoneToUse = await reconcilePhones(db, buyerPhone);
   await db
     .insert(users)
     .values([
       {
         id: "u_seller_demo",
-        phone: process.env.DIAL_PARTICIPANT_NUMBER ?? process.env.DIAL_NUMBER_B ?? "+15550000002",
+        phone: buyerPhone === SELLER_DEMO_PHONE ? null : SELLER_DEMO_PHONE,
         role: "seller",
         consentStatus: "opted_in",
       },
@@ -115,6 +157,12 @@ export async function seed(db: Db): Promise<void> {
       { id: "u_operator", phone: null, role: "operator", consentStatus: "unknown" },
     ])
     .onConflictDoNothing();
+  // The real buyer phone texting the Dial service number (offers with source `sms`). Inserted on its own
+  // so a phone conflict can never silently skip creating the user.
+  await db
+    .insert(users)
+    .values({ id: SMS_BUYER_ID, phone: smsBuyerPhoneToUse, role: "buyer", consentStatus: "opted_in" })
+    .onConflictDoNothing({ target: users.id });
 
   await db
     .insert(listings)

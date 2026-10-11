@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Offer, OfferStatus, Order } from "@/lib/types";
-import { acceptOffer, ApiError, counterOffer, declineOffer, errorMessage, getOffers, getOrders, postCheckout, postOrder } from "./api";
+import { acceptOffer, ApiError, counterOffer, declineOffer, errorMessage, getOffers, getOrders, postCheckout, postConfirm, postOrder } from "./api";
 import { formatCents } from "./format";
 import { usePolling } from "./hooks";
 import { useToast } from "./Toasts";
@@ -156,7 +156,9 @@ function OfferRow({
           )}
         </div>
       )}
-      {offer.status === "accepted" && <OrderPayment offer={offer} order={order} ready={ordersReady} />}
+      {offer.status === "accepted" && (
+        <OrderPayment offer={offer} order={order} ready={ordersReady} onChanged={onChanged} />
+      )}
     </li>
   );
 }
@@ -260,11 +262,25 @@ function SellerActions({ offer, onChanged }: { offer: Offer; onChanged: () => vo
 }
 
 /** Accepted offer → hosted Stripe test Checkout. `paid` is shown only once the webhook has set it. */
-function OrderPayment({ offer, order, ready }: { offer: Offer; order: Order | null; ready: boolean }) {
+function OrderPayment({
+  offer,
+  order,
+  ready,
+  onChanged,
+}: {
+  offer: Offer;
+  order: Order | null;
+  ready: boolean;
+  onChanged: () => void;
+}) {
   const [paying, setPaying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notConfigured, setNotConfigured] = useState(false);
   const [processing, setProcessing] = useState(false);
+  // Order id known from the last pay() even before the orders poll catches up.
+  const [payingOrderId, setPayingOrderId] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [checkResult, setCheckResult] = useState<string | null>(null);
 
   // Back/forward from Stripe restores this page from bfcache with `paying` still true.
   useEffect(() => {
@@ -277,15 +293,45 @@ function OrderPayment({ offer, order, ready }: { offer: Offer; order: Order | nu
     setPaying(true);
     setError(null);
     setNotConfigured(false);
+    setCheckResult(null);
     try {
       const { order: ensured } = await postOrder({ offerId: offer.id });
+      setPayingOrderId(ensured.id);
       const { url } = await postCheckout(ensured.id);
       window.location.assign(url);
     } catch (err) {
       if (err instanceof ApiError && err.code === "STRIPE_NOT_CONFIGURED") setNotConfigured(true);
       else if (err instanceof ApiError && err.code === "PAYMENT_PROCESSING") setProcessing(true);
+      // The server just confirmed an earlier payment with Stripe: refetch to show it as paid.
+      else if (err instanceof ApiError && err.code === "ORDER_NOT_PENDING") onChanged();
       else setError(errorMessage(err));
       setPaying(false);
+    }
+  }
+
+  const checkOrderId = order?.id ?? payingOrderId;
+  async function checkStatus() {
+    if (!checkOrderId) return;
+    setChecking(true);
+    setError(null);
+    setNotConfigured(false);
+    try {
+      const result = await postConfirm(checkOrderId);
+      if (result.confirmed) {
+        setCheckResult(`Payment confirmed — order ${result.order.id} paid`);
+        setProcessing(false);
+        onChanged();
+      } else {
+        const detail = result.reason
+          ? result.reason.replace(/_/g, " ")
+          : `session ${result.sessionStatus ?? "unknown"}, payment ${result.paymentStatus ?? "unknown"}`;
+        setCheckResult(`Not paid yet (${detail})`);
+      }
+    } catch (err) {
+      if (err instanceof ApiError && err.code === "STRIPE_NOT_CONFIGURED") setNotConfigured(true);
+      else setError(errorMessage(err));
+    } finally {
+      setChecking(false);
     }
   }
 
@@ -315,8 +361,20 @@ function OrderPayment({ offer, order, ready }: { offer: Offer; order: Order | nu
           Accepted — {order ? `order ${order.id} ` : "order "}pending payment
         </p>
       )}
+      {((order?.paymentStatus === "pending" && order.stripeCheckoutSessionId) || processing) && checkOrderId && (
+        <button
+          type="button"
+          onClick={() => void checkStatus()}
+          disabled={checking}
+          className={`${buttonClass.secondary} ${processing ? "ml-auto" : ""}`}
+          aria-label={`Check payment status of order ${checkOrderId} with Stripe`}
+        >
+          {checking && <Spinner />}
+          Check payment status
+        </button>
+      )}
       {processing ? (
-        <p role="status" className="ml-auto text-[11px] text-muted">
+        <p role="status" className="text-[11px] text-muted">
           Payment received, awaiting confirmation…
         </p>
       ) : (
@@ -333,6 +391,11 @@ function OrderPayment({ offer, order, ready }: { offer: Offer; order: Order | nu
           </button>
         )
       )}
+      {checkResult && (
+        <p role="status" className="basis-full text-[11px] text-muted">
+          {checkResult}
+        </p>
+      )}
       {notConfigured && (
         <p role="status" className="basis-full text-[11px] text-muted">
           Stripe not configured (set STRIPE_SECRET_KEY)
@@ -340,7 +403,7 @@ function OrderPayment({ offer, order, ready }: { offer: Offer; order: Order | nu
       )}
       {error && (
         <p role="alert" className="basis-full font-mono text-[11px] text-danger">
-          Checkout failed: {error}
+          Payment error: {error}
         </p>
       )}
     </div>

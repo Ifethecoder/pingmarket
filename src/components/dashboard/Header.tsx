@@ -43,8 +43,9 @@ export function Header() {
           <p>
             <strong className="font-semibold">Buyer input on this page is SIMULATED (web demo buyer).</strong>{" "}
             It did not arrive from a third phone. The seller and buyer handsets at <code className="font-mono">/sim</code> are
-            also simulated and appear in the trace as <code className="font-mono">SIM</code>. Real seller messages arrive via
-            Dial SMS on Number B.
+            also simulated and appear in the trace as <code className="font-mono">SIM</code>. The real buyer texts the
+            PingMarket number from Number B over Dial SMS (tagged <code className="font-mono">Dial</code> in the trace); sellers
+            negotiate here.
           </p>
         </div>
       </div>

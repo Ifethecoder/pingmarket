@@ -1,10 +1,10 @@
 # Stripe test-mode checkout (PM-11)
 
-PingMarket takes one agreed price through a **hosted Stripe Checkout page in test mode**. The order turns `paid` only when a **signed Stripe webhook** says so. Generating the link, opening it, or landing back on `/dashboard?checkout=success` never marks anything paid. No Stripe Connect, no payouts, no real money.
+PingMarket takes one agreed price through a **hosted Stripe Checkout page in test mode (sandbox)**. **Only `STRIPE_SECRET_KEY` is required**: when the buyer comes back from Checkout, the server reads the Checkout Session from Stripe with the secret key and marks the order `paid` only if Stripe says it is paid. A signed webhook is an optional backstop. Generating the link, opening it, or the redirect URL alone never marks anything paid. No Stripe Connect, no payouts, no real money.
 
 ## 1. Secret key
 
-1. Open the [Stripe Dashboard](https://dashboard.stripe.com) and turn on **Test mode** (toggle at the top right; newer dashboards may show a **Sandbox** switcher instead).
+1. Open the [Stripe Dashboard](https://dashboard.stripe.com) and switch to your **Sandbox** (newer dashboards) or turn on **Test mode** (older dashboards, toggle at the top right).
 2. Go to **Developers → API keys** and copy the **Secret key** (`sk_test_…`). A restricted test key (`rk_test_…`) with write access to Checkout Sessions also works.
 3. Put it in `.env.local`:
 
@@ -14,9 +14,11 @@ PingMarket takes one agreed price through a **hosted Stripe Checkout page in tes
 
 Live keys (`sk_live_…`) are refused: the app reports `STRIPE_NOT_CONFIGURED`. Never commit `.env.local`, and never paste keys into issues, chat or logs.
 
-## 2. Webhook secret
+That is all the default flow needs. Restart `npm run dev` after editing `.env.local`.
 
-The webhook endpoint is `POST /api/stripe/webhook`. Without `STRIPE_WEBHOOK_SECRET` it answers `503`, and orders stay `pending`.
+## 2. Optional: webhook backstop
+
+Not required. Without it, payment is confirmed when the buyer returns from Checkout, or on demand with **Check payment status**. The webhook additionally catches buyers who close the tab before Stripe redirects them back, and delayed payment methods (bank debits) that settle later. The endpoint is `POST /api/stripe/webhook`; without `STRIPE_WEBHOOK_SECRET` it answers `503`, which is harmless when no webhook is configured.
 
 ### Local development (Stripe CLI)
 
@@ -47,25 +49,49 @@ The webhook endpoint is `POST /api/stripe/webhook`. Without `STRIPE_WEBHOOK_SECR
    - `checkout.session.async_payment_failed`
    - (optional) `checkout.session.expired`: acknowledged; the order stays `pending`.
 5. After saving, reveal the endpoint's **Signing secret** (`whsec_…`) and set it as `STRIPE_WEBHOOK_SECRET` in the deployment's environment.
-6. Set `APP_URL=https://<your-host>` in the deployment's environment. It is server-only and read at runtime. In production, checkout refuses to start without it (`503 APP_URL_REQUIRED`), so a forged `Host` header can never choose where Stripe redirects the buyer. In development the request origin is used when it is unset.
+6. Whether or not you add the webhook, set `APP_URL=https://<your-host>` in the deployment's environment. It is server-only and read at runtime. In production, checkout refuses to start without it (`503 APP_URL_REQUIRED`), so a forged `Host` header can never choose where Stripe redirects the buyer. In development the request origin is used when it is unset.
 
-## 3. Demo flow
+## 3. Demo flow (secret key only)
 
-1. `npm run dev`, then `npm run stripe:listen` in another terminal (with `STRIPE_WEBHOOK_SECRET` set as above).
-2. On `/dashboard`, send an offer on a native listing and get it to `accepted` (via Developer A's negotiation flow, or by accepting a seller counter on the dashboard).
+1. `npm run dev` with `STRIPE_SECRET_KEY` set. No `stripe listen` needed.
+2. On `/dashboard`, send an offer on a native listing and get it to `accepted` (via the negotiation flow).
 3. In the **Negotiation** panel the accepted offer shows **Pay with Stripe (test)**. Clicking it:
    - `POST /api/orders { offerId }` gets or creates the order (`ORD{n}`, `pending`, amount = accepted price);
    - `POST /api/orders/{id}/checkout` creates (or reuses, while still open) a hosted Checkout Session;
    - the browser goes to Stripe's hosted page.
 4. Pay with the test card **4242 4242 4242 4242**, any future expiry date, any CVC and any postal code.
-5. Stripe redirects to `/dashboard?checkout=success&order=ORD{n}`. The dashboard shows "Returned from Stripe — waiting for webhook confirmation" and removes the query string. The order is still `pending` at this point.
-6. Stripe sends `checkout.session.completed` with `payment_status = "paid"` through `stripe listen`. The webhook checks the signature, marks the order `paid` and the listing `sold` in one transaction, and the panel shows a **Paid** chip within about 4 seconds. The event trace shows `Order ORD{n} paid via Stripe test checkout`.
+5. Stripe redirects to `/dashboard?checkout=success&order=ORD{n}&session_id=cs_test_…` (Stripe fills in the real session id). The dashboard removes the query string and calls `POST /api/orders/ORD{n}/confirm { sessionId }`. The server retrieves that session from Stripe with the secret key and checks it (see the rules below). If it is paid, the order becomes `paid` and the listing `sold` in one transaction, the toast says "Payment confirmed — order ORD{n} paid", and the panel shows a **Paid** chip. The event trace shows `Order ORD{n} paid via Stripe test checkout`.
+6. If Stripe has not settled yet, the dashboard retries 3 more times, 2 seconds apart, then says "Payment not confirmed yet — use Check payment status". That button (shown for a pending order that has a Checkout session) runs the same server check on demand.
 
 Cancelling on the Stripe page returns to `?checkout=cancel`; the order stays `pending` and the button can be used again (the still-open session is reused).
 
-If the buyer paid but the webhook has not arrived yet, clicking the button again does **not** create a second session: the API answers `409 PAYMENT_PROCESSING` and the panel shows "Payment received, awaiting confirmation…". A `failed` order shows **Retry payment**, which starts a fresh session and moves the order back to `pending`.
+If the buyer paid but the order is still `pending` (for example the tab was closed before the redirect), clicking **Pay** again does **not** create a second session: the server checks the completed session with Stripe first. If it is paid, the order is marked `paid` and the API answers `409 ORDER_NOT_PENDING` ("Order already paid"); if it is still settling, it answers `409 PAYMENT_PROCESSING` and the panel shows "Payment received, awaiting confirmation…" with **Check payment status**. A `failed` order shows **Retry payment**, which starts a fresh session and moves the order back to `pending`.
 
-## Behaviour reference
+## Rules for marking an order paid
+
+Every path (the confirm endpoint, a repeated Pay click, and the optional webhook) uses the same check, `applyPaidCheckoutSession` in `src/lib/payments/stripe.ts`, on a Checkout Session that came from Stripe itself (retrieved with the secret key, or inside a signed webhook). All of these must hold:
+
+- `livemode` is `false` (test mode / sandbox only);
+- the session's order (`client_reference_id`, falling back to `metadata.orderId`) exists and, for `POST /api/orders/{id}/confirm`, is that same order. A `sessionId` belonging to another order is rejected with `409 SESSION_MISMATCH` and changes nothing;
+- `payment_status` is `"paid"` (otherwise the order stays `pending`);
+- `amount_total` equals the order amount and `currency` is `usd`. Otherwise the check is logged and the order is not marked paid (`reason: "amount_mismatch"`).
+
+Then the order goes `pending`/`failed` → `paid`, records the paid session id, and the listing becomes `sold`. Repeating it is a no-op. If an already-paid order sees a second, different paid session, that is logged as a conflict (possible double payment, refund it in the Stripe Dashboard) and nothing changes.
+
+`POST /api/orders/{id}/confirm`, optional body `{ "sessionId": "cs_test_…" }` (defaults to the order's stored session):
+
+| Situation | Response |
+|---|---|
+| order already `paid` | `200 { confirmed: true }`, Stripe is not called |
+| session paid and all checks pass | `200 { confirmed: true, sessionStatus: "complete", paymentStatus: "paid" }` |
+| session open / unpaid | `200 { confirmed: false, sessionStatus, paymentStatus }` |
+| checks fail (live mode, amount, currency) | `200 { confirmed: false, reason }` |
+| order has no session yet | `200 { confirmed: false, reason: "no_session" }` |
+| unknown order / session | `404 ORDER_NOT_FOUND` / `404 SESSION_NOT_FOUND` |
+| session belongs to another order | `409 SESSION_MISMATCH` |
+| no test-mode secret key | `503 STRIPE_NOT_CONFIGURED` |
+
+Optional webhook events:
 
 | Event | Effect |
 |---|---|
@@ -76,14 +102,11 @@ If the buyer paid but the webhook has not arrived yet, clicking the button again
 | `checkout.session.expired` | stays `pending`; the next click creates a new session |
 | any other event | `200 { received: true, ignored: true }` |
 
-- The order id is read from `client_reference_id`, falling back to `metadata.orderId`.
-- A paid event must match the order's amount and be in `usd`; otherwise it is logged and ignored (`reason: "amount_mismatch"`). Live-mode events are ignored (`reason: "livemode"`).
-- A signed paid event is authoritative: it pays a `pending` or `failed` order even if a newer session was created since, and records the paid session id. A second, different paid session for an already-paid order is logged as a conflict (possible double payment, refund it in the Stripe Dashboard) and ignored.
-- Duplicate deliveries are no-ops (`changed: false`). Events that can never apply (unknown order, amount mismatch, second payment) get a `200` acknowledgement so Stripe stops retrying; database errors return `500` so Stripe retries.
+- Duplicate deliveries are no-ops (`changed: false`). Events that can never apply (live mode, unknown order, amount mismatch, second payment) get a `200` acknowledgement so Stripe stops retrying; database errors return `500` so Stripe retries.
 - Bad or missing signatures get `400`. The raw body and card data are never logged; card details only ever exist on Stripe's hosted page.
 
 ## Troubleshooting
 
 - **"Stripe not configured (set STRIPE_SECRET_KEY)"** on the dashboard: the key is missing, blank or not a test-mode key. Restart `npm run dev` after editing `.env.local`.
-- **Paid on Stripe but the order stays `pending`:** `stripe listen` is not running, `STRIPE_WEBHOOK_SECRET` does not match the secret it printed, or the dev server was not restarted. The CLI output shows the HTTP status for each forwarded event (`400` = signature mismatch, `503` = secret missing).
+- **Paid on Stripe but the order stays `pending`:** click **Check payment status** in the Negotiation panel (or `curl -X POST localhost:3000/api/orders/ORD{n}/confirm`). If you use the optional webhook: check that `stripe listen` is running and `STRIPE_WEBHOOK_SECRET` matches the secret it printed. The CLI output shows the HTTP status for each forwarded event (`400` = signature mismatch, `503` = secret missing).
 - **Amounts under $0.50:** Stripe rejects Checkout totals below its minimum charge amount, so checkout fails for very small offers.
