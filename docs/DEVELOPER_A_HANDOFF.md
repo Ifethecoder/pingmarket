@@ -12,7 +12,7 @@ npm run typecheck:messaging
 npm run test:messaging
 ```
 
-Tests never send an SMS or contact an external database. Connectivity tests use temporary local SQLite journals; webhook and seller-router tests use test-only memory adapters. Router deduplication/rollback checks demonstrate the proposed adapter contract, not production database uniqueness, concurrency, or crash recovery. All 40 tests and messaging type checking pass.
+Tests never send an SMS or contact an external database. Connectivity tests use temporary local SQLite journals; webhook, seller-router, and negotiation tests use test-only memory adapters. Deduplication/rollback checks demonstrate the proposed adapter contracts, not production database uniqueness, concurrency, or crash recovery. All 47 tests and messaging type checking pass.
 
 **Implemented modules**
 
@@ -24,6 +24,7 @@ Tests never send an SMS or contact an external database. Connectivity tests use 
 | `src/lib/sms/intent.ts` | Pure command/listing parsing and missing-field clarification; no side effects |
 | `src/lib/sms/ports.ts` | Proposed inbox/sender interfaces and extracted draft shape; no database schema |
 | `src/lib/sms/router.ts` | Seller routing, draft lifecycle, validation, trusted ownership/visibility, and proposed atomic processing boundary |
+| `src/lib/negotiation/service.ts` | OFFER/COUNTER/ACCEPT/DECLINE authorization, expiry/version checks, and proposed atomic reservation/order boundary |
 
 **First contract to agree: inbound storage**
 
@@ -73,6 +74,14 @@ Supported listing forms include both PRD examples and `I'd like to sell my oak d
 
 **Remaining agreements and work**
 
+The standalone negotiation service now implements the $100 offer → $110 seller counter → buyer acceptance path, plus direct seller acceptance and recipient decline. It is not wired to the SMS router or HTTP routes yet. All 47 messaging tests and type checking pass. The seven negotiation tests use a serializing memory adapter, including competing acceptance and rollback checks; they do not prove production database concurrency.
+
+`createNegotiationService(store, { offerLifetimeMs, now? })` requires an explicit positive offer lifetime; counters retain the original deadline. `execute(requestId, command)` accepts integer cents and provisional D/O public codes. Transitions require `expectedVersion`; HTTP adapters must validate request bodies and use the buyer's observed version. Plain SMS does not contain a version: agree how the inbox records the proposal being answered before wiring SMS transitions, rather than silently replacing a stale version with the latest one.
+
+`NegotiationStore.execute` resolves an authenticated actor from trusted integration context and preserves `dial_sms` versus `buyer_simulator` provenance. Scope idempotency by actor/source/request ID, bind the key to the command, reject changed-input reuse, and persist the result with all writes and notification intents. Use stable provider message IDs for SMS requests. Notifications are stored activity/outbound intents, not immediate sends; route simulated-buyer updates to the dashboard and permitted real-participant updates to SMS.
+
+Acquire listing locks before offer locks, shared with EDIT/REMOVE. Under that lock, acceptance reserves the available listing, creates exactly one pending-payment order at the accepted price with the offer's participants, and closes competing actionable offers. Enforce unique order-per-offer storage and increment versions when closing competing offers. Return the authorized existing order on repeated acceptance without repeating notifications. An offer's author cannot accept/decline their own proposal; only the seller may counter an open buyer offer. Additional bargaining rounds are outside this slice.
+
 The seller slice can now be exercised through `createSellerRouter(store).process(eventId)`. `SellerMessageStore.process` must load the immutable received message, resolve the actor from its sender/service context, serialize each conversation, and deduplicate both provider identifiers before invoking the callback. Commit listing creation, draft changes, queued reply, and event completion together. Roll back everything on failure. Do not send SMS inside the callback; transaction retries must not send messages. B supplies the application adapter and recovery mechanism.
 
 Drafts are scoped by participant and service, expire 30 minutes after starting (clarifications do not extend expiry), and are replaced by a new SELL. HELP and other explicit commands preserve the draft; CANCEL clears it. Older provider timestamps are rejected with a resend prompt; equal timestamps follow serialized receipt order. This is a conservative late-message policy, not proof of provider ordering. Confirm this policy with B.
@@ -89,7 +98,7 @@ STOP invokes `disableAlerts` for the resolved participant, even for late message
 
 1. B confirms the framework/runtime, ID/public-code formats (D/O prefixes are provisional), authenticated buyer context, and persistence interface. A does not create B's schema or migrate the database.
 2. Review the implemented seller router's proposed transaction interface, listing fields, consent reference, draft expiry, ordering, listing locks, and STOP cancellation requirements. B implements durable storage; A wires it into the agreed runtime and checks provider opt-out handling.
-3. Define atomic offer acceptance/reservation/order creation and request idempotency. Implement A's negotiation service, offer endpoints, and protected buyer simulator.
+3. Review the implemented negotiation service and atomic acceptance/idempotency contract. B supplies persistence; A still implements offer endpoints, SMS delegation with proposal-version handling, and the protected buyer simulator in the shared runtime.
 4. B supplies native/Darwin search and dashboard; A supplies normalized input, source-aware SMS formatting, and event provenance. Preserve the PRD's shared search response shape.
 5. Two Dial numbers, the webhook signing secret, and the live inbound/reply test are configured and verified. The remaining live tests are listing creation and negotiation against B's application database. Those are required to close the marketplace PRD milestones.
 

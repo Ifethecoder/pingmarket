@@ -10,5 +10,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["src/lib/dial/**/*.ts", "src/lib/sms/**/*.ts", "scripts/dial/**/*.ts", "tests/messaging/**/*.ts"]
+  "include": ["src/lib/dial/**/*.ts", "src/lib/sms/**/*.ts", "src/lib/negotiation/**/*.ts", "scripts/dial/**/*.ts", "tests/messaging/**/*.ts"]
 }
