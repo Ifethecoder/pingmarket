@@ -1,7 +1,14 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { MARKETPLACE_IDS, type Marketplace, type MarketplaceId, type SearchRequest, type SearchResponse } from "@/lib/types";
+import {
+  MARKETPLACE_IDS,
+  type DarwinSearchOutcome,
+  type Marketplace,
+  type MarketplaceId,
+  type SearchRequest,
+  type SearchResponse,
+} from "@/lib/types";
 import { ApiError, postSearch, errorMessage } from "./api";
 import { ExternalResults } from "./ExternalResults";
 import { marketplaceName } from "./format";
@@ -30,6 +37,9 @@ export function SearchPanel({
   const [maxPrice, setMaxPrice] = useState("");
   const [location, setLocation] = useState("");
   const [includeExternal, setIncludeExternal] = useState(true);
+  const [followUp, setFollowUp] = useState("");
+  /** 1 = fresh search; each Darwin follow-up adds a turn. */
+  const [turn, setTurn] = useState(1);
 
   const [loading, setLoading] = useState(false);
   const [elapsedMs, setElapsedMs] = useState<number | null>(null);
@@ -44,28 +54,46 @@ export function SearchPanel({
       ? marketplaces.map((m) => ({ id: m.id, label: m.name }))
       : MARKETPLACE_IDS.map((id) => ({ id, label: marketplaceName(id, []) }));
 
-  async function runSearch() {
-    const trimmed = query.trim();
-    if (!trimmed || loading) return;
-
-    const body: SearchRequest = { query: trimmed, marketplaceId, includeExternalAgents: includeExternal };
+  function baseBody(text: string): SearchRequest {
+    const body: SearchRequest = { query: text, marketplaceId, includeExternalAgents: includeExternal };
     const max = Number.parseFloat(maxPrice);
     if (Number.isFinite(max) && max > 0) body.maxPriceCents = Math.round(max * 100);
     if (location.trim()) body.location = location.trim();
+    return body;
+  }
 
+  async function submit(body: SearchRequest, isFollowUp: boolean) {
     startedAt.current = performance.now();
     setElapsedMs(0);
     setLoading(true);
     setFailure(null);
     try {
-      setResult(await postSearch(body));
+      const resp = await postSearch(body);
+      setResult(resp);
+      setTurn((t) => (isFollowUp ? t + 1 : 1));
+      if (isFollowUp) setFollowUp("");
     } catch (err) {
-      setResult(null);
+      // A failed follow-up keeps the previous turn on screen so the buyer can retry or start over.
+      if (!isFollowUp) setResult(null);
       setFailure({ message: errorMessage(err), issues: err instanceof ApiError ? err.issues : undefined });
     } finally {
       setElapsedMs(performance.now() - startedAt.current);
       setLoading(false);
     }
+  }
+
+  function runSearch() {
+    const trimmed = query.trim();
+    if (!trimmed || loading) return;
+    void submit(baseBody(trimmed), false);
+  }
+
+  /** Continue the current Darwin search (`previousResponseId`). Darwin treats `text` as the new task. */
+  function runFollowUp(text = followUp) {
+    const trimmed = text.trim();
+    const previousResponseId = result?.darwin.responseId;
+    if (!trimmed || !previousResponseId || loading) return;
+    void submit({ ...baseBody(trimmed), includeExternalAgents: true, previousResponseId }, true);
   }
 
   return (
@@ -213,9 +241,102 @@ export function SearchPanel({
             </p>
             <NativeResults results={result.nativeListings} marketplaces={marketplaces} onOfferSent={onOfferSent} />
             <ExternalResults darwin={result.darwin} capabilities={result.externalCapabilities} />
+            {result.darwin.responseId && (
+              <FollowUpBox
+                darwin={result.darwin}
+                turn={turn}
+                value={followUp}
+                loading={loading}
+                onChange={setFollowUp}
+                onSubmit={runFollowUp}
+              />
+            )}
           </div>
         )}
       </div>
     </Panel>
+  );
+}
+
+/**
+ * Darwin follow-up (Search v3 `previousResponseId`): answer a `needs_input` question or refine the match.
+ * The server holds the private continuation token; the browser only ever sees `responseId`.
+ */
+function FollowUpBox({
+  darwin,
+  turn,
+  value,
+  loading,
+  onChange,
+  onSubmit,
+}: {
+  darwin: DarwinSearchOutcome;
+  turn: number;
+  value: string;
+  loading: boolean;
+  onChange: (value: string) => void;
+  onSubmit: (text?: string) => void;
+}) {
+  const needsInput = darwin.status === "needs_input";
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSubmit();
+      }}
+      aria-labelledby="follow-up-heading"
+      className="flex flex-col gap-2 rounded-lg border border-external/45 bg-external/[0.035] p-3"
+    >
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <label id="follow-up-heading" htmlFor="search-follow-up" className="text-sm font-semibold">
+          {needsInput ? "Answer Darwin’s question" : "Follow up with Darwin"}
+        </label>
+        <span className="font-mono text-[10px] text-muted" title="Darwin responseId this follow-up continues">
+          turn {turn} · continues {darwin.responseId}
+        </span>
+      </div>
+      {needsInput && darwin.question && <p className="text-xs text-foreground">{darwin.question}</p>}
+      <div className="flex gap-2">
+        <input
+          id="search-follow-up"
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={
+            needsInput
+              ? "e.g. compare prices for a Herman Miller Aeron size B under $800"
+              : "e.g. buy a used oak desk from a seller that ships to Berkeley"
+          }
+          className={inputClass}
+          maxLength={2000}
+          disabled={loading}
+        />
+        <button type="submit" className={`${buttonClass.primary} shrink-0 px-4`} disabled={loading || !value.trim()}>
+          {loading && <Spinner />}
+          {loading ? "Sending…" : "Send"}
+        </button>
+      </div>
+      <p className="text-[11px] leading-snug text-muted">
+        Darwin treats each follow-up as the new task (“latest task wins”), so restate the full request rather than
+        only the missing detail. Native listings are re-searched with the follow-up text.
+      </p>
+      {darwin.relatedSearches.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] text-muted">Darwin suggests:</span>
+          {darwin.relatedSearches.map((s) => (
+            <button
+              key={s.query}
+              type="button"
+              title={s.reason ?? undefined}
+              onClick={() => onSubmit(s.query)}
+              disabled={loading}
+              className={buttonClass.secondary}
+            >
+              {s.query}
+            </button>
+          ))}
+        </div>
+      )}
+    </form>
   );
 }

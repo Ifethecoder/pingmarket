@@ -1,0 +1,1 @@
+ALTER TABLE "agent_searches" ADD COLUMN "darwin_search_token" text;

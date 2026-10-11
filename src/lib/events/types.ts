@@ -10,6 +10,8 @@ export const TRACE_EVENT_KINDS = [
   "search",
   "darwin_search",
   "offer",
+  "order_created",
+  "payment",
 ] as const;
 
 export type TraceEventKind = (typeof TRACE_EVENT_KINDS)[number];

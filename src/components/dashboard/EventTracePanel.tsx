@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import type { TraceEventKind } from "@/lib/events/types";
+import type { TraceEvent, TraceEventKind } from "@/lib/events/types";
 import { getEvents } from "./api";
 import { usePolling } from "./hooks";
 import { Chip, EmptyNote, ErrorNote, LiveStatus, Panel, RelativeTime, type Tone } from "./ui";
@@ -13,7 +13,19 @@ const kindStyle: Record<TraceEventKind, { tone: Tone; label: string }> = {
   search: { tone: "neutral", label: "search" },
   darwin_search: { tone: "external", label: "darwin" },
   offer: { tone: "warning", label: "offer" },
+  order_created: { tone: "native", label: "order" },
+  payment: { tone: "success", label: "payment" },
 };
+
+/** Which SMS path a trace row took: real Dial phone vs the /sim demo handsets. */
+function smsChannel(ev: TraceEvent): "dial" | "sim" | null {
+  if (ev.kind !== "sms_inbound" && ev.kind !== "sms_outbound") return null;
+  const channel = ev.detail?.channel;
+  if (channel === "dial" || channel === "sim") return channel;
+  if (ev.summary.startsWith("SIM ")) return "sim";
+  if (ev.summary.startsWith("SMS ")) return "dial";
+  return null;
+}
 
 const fetchEvents = () => getEvents(50);
 
@@ -53,18 +65,30 @@ export function EventTracePanel({ refreshToken }: { refreshToken: number }) {
         <ol className="max-h-[28rem] overflow-auto font-mono text-[11px]">
           {events.map((ev) => {
             const style = kindStyle[ev.kind] ?? { tone: "neutral" as Tone, label: ev.kind };
+            const channel = smsChannel(ev);
             const hasDetail = ev.detail && Object.keys(ev.detail).length > 0;
             return (
               <li
                 key={ev.id}
-                className={`border-b border-border/60 px-4 py-1.5 last:border-0 ${fresh.has(ev.id) ? "motion-safe:animate-fresh" : ""}`}
+                className={`border-b border-border/60 px-4 py-1.5 last:border-0 ${channel === "dial" ? "border-l-2 border-l-accent bg-accent/5" : ""} ${fresh.has(ev.id) ? "motion-safe:animate-fresh" : ""}`}
               >
                 <div className="flex items-start gap-2">
                   <Chip tone={style.tone} className="w-[4.75rem] justify-center font-mono" title={ev.kind}>
                     {style.label}
                   </Chip>
                   <RelativeTime value={ev.at} className="w-12 shrink-0 pt-0.5 text-right text-muted" />
-                  <span className="min-w-0 flex-1 break-words pt-0.5 font-sans text-xs">{ev.summary}</span>
+                  <span className="min-w-0 flex-1 break-words pt-0.5 font-sans text-xs">
+                    {channel && (
+                      <Chip
+                        tone={channel === "dial" ? "accent" : "neutral"}
+                        className="mr-1.5 align-middle"
+                        title={channel === "dial" ? "Real phone via Dial" : "Simulated handset (/sim)"}
+                      >
+                        {channel === "dial" ? "Dial" : "Sim"}
+                      </Chip>
+                    )}
+                    {ev.summary}
+                  </span>
                 </div>
                 {hasDetail && (
                   <details className="ml-[8.25rem] mt-0.5">

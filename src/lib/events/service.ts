@@ -1,10 +1,10 @@
 /**
- * Demo activity trace (PM-09): a newest-first union of messages, listings, searches and offers.
+ * Demo activity trace (PM-09): a newest-first union of messages, listings, searches, offers and orders.
  * Phone numbers are masked to their last 4 digits.
  */
 import { desc, eq } from "drizzle-orm";
 import { getDb, type Db } from "../db";
-import { agentSearches, listings, marketplaces, messages, offers } from "../db/schema";
+import { agentSearches, listings, marketplaces, messages, offers, orders } from "../db/schema";
 import type { TraceEvent } from "./types";
 
 function truncate(s: string, max: number): string {
@@ -27,7 +27,7 @@ export function formatMoney(cents: number, currency = "USD"): string {
 
 export async function listTraceEvents(limit = 50, db?: Db): Promise<TraceEvent[]> {
   const conn = db ?? (await getDb());
-  const [messageRows, listingRows, searchRows, offerRows] = await Promise.all([
+  const [messageRows, listingRows, searchRows, offerRows, orderRows] = await Promise.all([
     conn.select().from(messages).orderBy(desc(messages.createdAt)).limit(limit),
     conn
       .select({ listing: listings, marketplaceName: marketplaces.name })
@@ -37,6 +37,13 @@ export async function listTraceEvents(limit = 50, db?: Db): Promise<TraceEvent[]
       .limit(limit),
     conn.select().from(agentSearches).orderBy(desc(agentSearches.createdAt)).limit(limit),
     conn.select().from(offers).orderBy(desc(offers.updatedAt)).limit(limit),
+    conn
+      .select({ order: orders, listingId: listings.id, listingStatus: listings.status, listingUpdatedAt: listings.updatedAt })
+      .from(orders)
+      .leftJoin(offers, eq(orders.offerId, offers.id))
+      .leftJoin(listings, eq(offers.listingId, listings.id))
+      .orderBy(desc(orders.createdAt))
+      .limit(limit),
   ]);
 
   const events: TraceEvent[] = [
@@ -45,8 +52,9 @@ export async function listTraceEvents(limit = 50, db?: Db): Promise<TraceEvent[]
         id: `message:${m.id}`,
         at: m.createdAt.toISOString(),
         kind: m.direction === "inbound" ? "sms_inbound" : "sms_outbound",
-        summary: `${maskPhone(m.fromNumber)} → ${maskPhone(m.toNumber)}: ${truncate(m.body, 120)}`,
-        detail: { messageId: m.id, dialEventId: m.dialEventId, direction: m.direction },
+        // `sim_` rows come from the /sim handsets (src/lib/sms/simulator.ts), never from Dial.
+        summary: `${m.dialEventId.startsWith("sim_") ? "SIM " : ""}${maskPhone(m.fromNumber)} → ${maskPhone(m.toNumber)}: ${truncate(m.body, 120)}`,
+        detail: { messageId: m.id, dialEventId: m.dialEventId, direction: m.direction, simulated: m.dialEventId.startsWith("sim_") },
       }),
     ),
     ...listingRows.map(
@@ -67,11 +75,13 @@ export async function listTraceEvents(limit = 50, db?: Db): Promise<TraceEvent[]
     ),
     ...searchRows.map((s): TraceEvent => {
       const nativeCount = Number(s.resultMetadata.nativeCount ?? 0);
+      const followUp = typeof s.resultMetadata.previousResponseId === "string";
+      // Explicit field list: `darwin_search_token` must never reach the trace.
       return {
         id: `search:${s.id}`,
         at: s.createdAt.toISOString(),
         kind: s.status === "skipped" ? "search" : "darwin_search",
-        summary: `Search "${truncate(s.query, 120)}" → Darwin ${s.status}, ${nativeCount} native`,
+        summary: `${followUp ? "Follow-up" : "Search"} "${truncate(s.query, 120)}" → Darwin ${s.status}, ${nativeCount} native`,
         detail: {
           searchId: s.id,
           darwinSearchId: s.darwinSearchId,
@@ -96,6 +106,40 @@ export async function listTraceEvents(limit = 50, db?: Db): Promise<TraceEvent[]
         },
       }),
     ),
+    ...orderRows.flatMap(({ order: o, listingId, listingStatus, listingUpdatedAt }): TraceEvent[] => {
+      const detail = {
+        orderId: o.id,
+        offerId: o.offerId,
+        listingId,
+        amountCents: o.amountCents,
+        paymentStatus: o.paymentStatus,
+        stripeCheckoutSessionId: o.stripeCheckoutSessionId,
+      };
+      const created: TraceEvent = {
+        id: `order:${o.id}`,
+        at: o.createdAt.toISOString(),
+        kind: "order_created",
+        summary: `Order ${o.id} created for offer ${o.offerId} · ${formatMoney(o.amountCents)} pending`,
+        detail,
+      };
+      if (o.paymentStatus === "pending") return [created];
+      // orders has no updated_at; a paid order marks its listing `sold` in the same transaction,
+      // so the listing's updated_at is the payment time.
+      const paidAt = o.paymentStatus === "paid" && listingStatus === "sold" && listingUpdatedAt ? listingUpdatedAt : o.createdAt;
+      return [
+        created,
+        {
+          id: `payment:${o.id}`,
+          at: paidAt.toISOString(),
+          kind: "payment",
+          summary:
+            o.paymentStatus === "paid"
+              ? `Order ${o.id} paid via Stripe test checkout · ${formatMoney(o.amountCents)}`
+              : `Order ${o.id} payment failed (Stripe test checkout)`,
+          detail,
+        },
+      ];
+    }),
   ];
 
   return events

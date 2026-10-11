@@ -66,6 +66,7 @@ function DarwinStatus({ darwin, count }: { darwin: DarwinSearchOutcome; count: n
     <span className="ml-auto font-mono text-[10px] text-muted" title="Darwin searchId / responseId">
       {darwin.searchId}
       {darwin.responseId ? ` · ${darwin.responseId}` : ""}
+      {darwin.previousResponseId ? ` · follow-up of ${darwin.previousResponseId}` : ""}
     </span>
   ) : null;
 

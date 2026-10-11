@@ -3,8 +3,9 @@
  *
  * - Read-only public discovery: POST /api/v3/search.
  * - Lenient response validation so additive Darwin changes don't break us.
- * - `searchToken` is a private continuation token: callers must never persist it
- *   or return it to browsers (see `runDarwinDiscovery`, which strips it).
+ * - `searchToken` is a private continuation token returned on the first (anonymous) response.
+ *   Follow-ups send it back in `X-Search-Token` with `previousResponseId`. It is stored server-side
+ *   only (`agent_searches.darwin_search_token`) and never returned to browsers.
  */
 import { z } from "zod";
 
@@ -22,7 +23,10 @@ export type DarwinContextItem =
 export interface DarwinSearchOptions {
   maxResults?: number;
   agentCount?: "auto" | number;
+  /** Continue an earlier response (same Darwin search, new turn). */
   previousResponseId?: string;
+  /** Private continuation token from the first response; required for anonymous follow-ups. */
+  searchToken?: string | null;
   context?: DarwinContextItem[];
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -37,7 +41,9 @@ export type DarwinErrorCode =
   | "RATE_LIMITED"
   | "TIMEOUT"
   | "NETWORK"
-  | "INVALID_RESPONSE";
+  | "INVALID_RESPONSE"
+  /** Follow-up rejected: expired `previousResponseId` or missing/invalid `X-Search-Token`. */
+  | "CONTINUATION_INVALID";
 
 export class DarwinError extends Error {
   readonly code: DarwinErrorCode;
@@ -105,6 +111,11 @@ const rawAssessmentSchema = z.looseObject({
   explanation: optStr,
 });
 
+const rawRelatedSearchSchema = z.looseObject({
+  query: z.string().min(1),
+  reason: optStr,
+});
+
 const rawSearchResponseSchema = z.looseObject({
   searchId: optStr,
   responseId: optStr,
@@ -124,7 +135,15 @@ const rawSearchResponseSchema = z.looseObject({
           }),
         ),
       assessment: rawAssessmentSchema.nullish().catch(null),
-      relatedSearches: z.array(z.unknown()).catch([]),
+      relatedSearches: z
+        .array(z.unknown())
+        .catch([])
+        .transform((items) =>
+          items.flatMap((item) => {
+            const parsed = rawRelatedSearchSchema.safeParse(item);
+            return parsed.success ? [parsed.data] : [];
+          }),
+        ),
       plan: z.unknown().optional(),
       question: optStr,
       noMatchReason: optStr,
@@ -195,6 +214,7 @@ export async function darwinSearchRaw(
 
   const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
   if (apiKey) headers["x-api-key"] = apiKey;
+  if (opts.searchToken) headers["X-Search-Token"] = opts.searchToken;
   const body = JSON.stringify(buildBody(query, opts));
 
   const abortError = (): DarwinError =>
@@ -247,6 +267,17 @@ export async function darwinSearchRaw(
     }
     if (!res.ok) {
       const code = errorCodeOf(payload);
+      // Observed live: 400 SEARCH_RESPONSE_EXPIRED (stale/unknown previousResponseId), 403 SEARCH_TOKEN_REQUIRED.
+      if (
+        opts.previousResponseId !== undefined &&
+        (code === "SEARCH_RESPONSE_EXPIRED" || code === "SEARCH_TOKEN_REQUIRED" || res.status === 403)
+      ) {
+        throw new DarwinError(
+          "CONTINUATION_INVALID",
+          `Darwin Search rejected the follow-up (HTTP ${res.status}${code ? ` ${code}` : ""})`,
+          { status: res.status, details: payload },
+        );
+      }
       throw new DarwinError(
         "HTTP_ERROR",
         `Darwin Search returned HTTP ${res.status}${code ? ` (${code})` : ""}`,

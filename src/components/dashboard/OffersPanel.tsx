@@ -1,12 +1,12 @@
 "use client";
 
-import { useRef, useState } from "react";
-import type { Offer, OfferStatus } from "@/lib/types";
-import { acceptOffer, errorMessage, getOffers } from "./api";
+import { useEffect, useRef, useState } from "react";
+import type { Offer, OfferStatus, Order } from "@/lib/types";
+import { acceptOffer, ApiError, counterOffer, declineOffer, errorMessage, getOffers, getOrders, postCheckout, postOrder } from "./api";
 import { formatCents } from "./format";
 import { usePolling } from "./hooks";
 import { useToast } from "./Toasts";
-import { Chip, EmptyNote, ErrorNote, LiveStatus, Panel, RelativeTime, Spinner, buttonClass, type Tone } from "./ui";
+import { Chip, EmptyNote, ErrorNote, LiveStatus, Panel, RelativeTime, Spinner, buttonClass, inputClass, type Tone } from "./ui";
 
 const statusTone: Record<OfferStatus, Tone> = {
   open: "accent",
@@ -35,6 +35,10 @@ export function OffersPanel({ refreshToken, onChanged }: { refreshToken: number;
     },
   });
   const offers = poll.data?.offers ?? [];
+  const ordersPoll = usePolling(getOrders, { intervalMs: 4000, refreshToken });
+  const orderByOffer = new Map((ordersPoll.data?.orders ?? []).map((o) => [o.offerId, o]));
+  // Until the first orders poll lands we cannot tell "unpaid" from "paid": no pay button yet.
+  const ordersReady = ordersPoll.data !== null || !ordersPoll.loading;
 
   return (
     <Panel
@@ -48,6 +52,11 @@ export function OffersPanel({ refreshToken, onChanged }: { refreshToken: number;
           <ErrorNote prefix="GET /api/offers" message={poll.error} />
         </div>
       )}
+      {ordersPoll.error && (
+        <div className="px-4 pt-3">
+          <ErrorNote prefix="GET /api/orders" message={ordersPoll.error} />
+        </div>
+      )}
       {offers.length === 0 ? (
         !poll.loading && !poll.error && <EmptyNote>No offers yet. Send one from a native listing result.</EmptyNote>
       ) : (
@@ -56,6 +65,8 @@ export function OffersPanel({ refreshToken, onChanged }: { refreshToken: number;
             <OfferRow
               key={o.id}
               offer={o}
+              order={orderByOffer.get(o.id) ?? null}
+              ordersReady={ordersReady}
               fresh={fresh.has(versionKey(o))}
               onChanged={onChanged}
             />
@@ -66,7 +77,19 @@ export function OffersPanel({ refreshToken, onChanged }: { refreshToken: number;
   );
 }
 
-function OfferRow({ offer, fresh, onChanged }: { offer: Offer; fresh: boolean; onChanged: () => void }) {
+function OfferRow({
+  offer,
+  order,
+  ordersReady,
+  fresh,
+  onChanged,
+}: {
+  offer: Offer;
+  order: Order | null;
+  ordersReady: boolean;
+  fresh: boolean;
+  onChanged: () => void;
+}) {
   const toast = useToast();
   const [accepting, setAccepting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -99,13 +122,16 @@ function OfferRow({ offer, fresh, onChanged }: { offer: Offer; fresh: boolean; o
             simulated web buyer
           </Chip>
         ) : (
-          <Chip tone="accent">SMS</Chip>
+          <Chip tone="accent" title="Offer texted from the buyer's phone via Dial">
+            SMS buyer
+          </Chip>
         )}
         <span className="ml-auto text-[11px] text-muted">
           updated <RelativeTime value={offer.updatedAt} />
         </span>
       </div>
 
+      {offer.status === "open" && <SellerActions offer={offer} onChanged={onChanged} />}
       {offer.status === "countered" && (
         <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-2.5 py-1.5">
           <p className="text-xs font-semibold">Seller countered: {price}</p>
@@ -121,7 +147,7 @@ function OfferRow({ offer, fresh, onChanged }: { offer: Offer; fresh: boolean; o
               Accept {price}
             </button>
           ) : (
-            <p className="ml-auto text-xs text-muted">Awaiting the SMS buyer</p>
+            <p className="ml-auto text-xs text-muted">Awaiting the SMS buyer (they reply ACCEPT/DECLINE by text)</p>
           )}
           {error && (
             <p role="alert" className="basis-full font-mono text-[11px] text-danger">
@@ -130,9 +156,193 @@ function OfferRow({ offer, fresh, onChanged }: { offer: Offer; fresh: boolean; o
           )}
         </div>
       )}
-      {offer.status === "accepted" && (
-        <p className="mt-1.5 text-xs font-medium text-success">Accepted — order pending payment</p>
-      )}
+      {offer.status === "accepted" && <OrderPayment offer={offer} order={order} ready={ordersReady} />}
     </li>
+  );
+}
+
+/** Seller console for an open offer: accept, counter with a price, or decline. */
+function SellerActions({ offer, onChanged }: { offer: Offer; onChanged: () => void }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState<"accept" | "counter" | "decline" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [counter, setCounter] = useState((offer.proposedPriceCents / 100).toFixed(2));
+  const price = formatCents(offer.proposedPriceCents);
+
+  const dollars = Number.parseFloat(counter);
+  const counterCents = Math.round(dollars * 100);
+  const counterValid = Number.isFinite(dollars) && counterCents >= 100;
+
+  async function run(action: "accept" | "counter" | "decline") {
+    setBusy(action);
+    setError(null);
+    try {
+      if (action === "accept") {
+        const { offer: u } = await acceptOffer(offer.id);
+        toast("success", `Offer ${u.id} accepted at ${formatCents(u.proposedPriceCents)}`);
+      } else if (action === "counter") {
+        const { offer: u } = await counterOffer(offer.id, counterCents);
+        toast("success", `Countered offer ${u.id} at ${formatCents(u.proposedPriceCents)}`);
+      } else {
+        const { offer: u } = await declineOffer(offer.id);
+        toast("success", `Offer ${u.id} declined`);
+      }
+      onChanged();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const disabled = busy !== null;
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-accent/40 bg-accent/10 px-2.5 py-1.5">
+      <Chip tone="accent" title="This dashboard is the seller's console for negotiation">
+        you are the seller
+      </Chip>
+      <button
+        type="button"
+        onClick={() => void run("accept")}
+        disabled={disabled}
+        className={`${buttonClass.native} py-1`}
+        aria-label={`Accept offer ${offer.id} at ${price} as the seller`}
+      >
+        {busy === "accept" && <Spinner />}
+        Accept {price}
+      </button>
+      <form
+        className="flex items-center gap-1"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (counterValid && !disabled) void run("counter");
+        }}
+      >
+        <label className="sr-only" htmlFor={`counter-${offer.id}`}>
+          Counter price in dollars for offer {offer.id}
+        </label>
+        <span className="text-xs text-muted" aria-hidden="true">
+          $
+        </span>
+        <input
+          id={`counter-${offer.id}`}
+          type="number"
+          inputMode="decimal"
+          min={1}
+          step="0.01"
+          value={counter}
+          onChange={(e) => setCounter(e.target.value)}
+          disabled={disabled}
+          className={`${inputClass} !w-20 !py-1 !text-xs tabular-nums`}
+        />
+        <button type="submit" disabled={disabled || !counterValid} className={`${buttonClass.secondary} py-1`}>
+          {busy === "counter" && <Spinner />}
+          Counter
+        </button>
+      </form>
+      <button
+        type="button"
+        onClick={() => void run("decline")}
+        disabled={disabled}
+        className={`${buttonClass.secondary} py-1 text-danger`}
+        aria-label={`Decline offer ${offer.id} as the seller`}
+      >
+        {busy === "decline" && <Spinner />}
+        Decline
+      </button>
+      {error && (
+        <p role="alert" className="basis-full font-mono text-[11px] text-danger">
+          Action failed: {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Accepted offer → hosted Stripe test Checkout. `paid` is shown only once the webhook has set it. */
+function OrderPayment({ offer, order, ready }: { offer: Offer; order: Order | null; ready: boolean }) {
+  const [paying, setPaying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notConfigured, setNotConfigured] = useState(false);
+  const [processing, setProcessing] = useState(false);
+
+  // Back/forward from Stripe restores this page from bfcache with `paying` still true.
+  useEffect(() => {
+    const onPageShow = () => setPaying(false);
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, []);
+
+  async function pay() {
+    setPaying(true);
+    setError(null);
+    setNotConfigured(false);
+    try {
+      const { order: ensured } = await postOrder({ offerId: offer.id });
+      const { url } = await postCheckout(ensured.id);
+      window.location.assign(url);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === "STRIPE_NOT_CONFIGURED") setNotConfigured(true);
+      else if (err instanceof ApiError && err.code === "PAYMENT_PROCESSING") setProcessing(true);
+      else setError(errorMessage(err));
+      setPaying(false);
+    }
+  }
+
+  if (order?.paymentStatus === "paid") {
+    return (
+      <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs">
+        <Chip tone="success">Paid</Chip>
+        <span className="text-muted">
+          Order <span className="font-mono">{order.id}</span> · {formatCents(order.amountCents)} via Stripe test checkout
+        </span>
+      </div>
+    );
+  }
+
+  const failed = order?.paymentStatus === "failed";
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-2">
+      {failed ? (
+        <>
+          <Chip tone="danger">Payment failed</Chip>
+          <span className="text-xs text-muted">
+            Order <span className="font-mono">{order.id}</span>
+          </span>
+        </>
+      ) : (
+        <p className="text-xs font-medium text-success">
+          Accepted — {order ? `order ${order.id} ` : "order "}pending payment
+        </p>
+      )}
+      {processing ? (
+        <p role="status" className="ml-auto text-[11px] text-muted">
+          Payment received, awaiting confirmation…
+        </p>
+      ) : (
+        ready && (
+          <button
+            type="button"
+            onClick={() => void pay()}
+            disabled={paying}
+            className={`${buttonClass.native} ml-auto py-1`}
+            aria-label={`${failed ? "Retry payment" : "Pay"} ${formatCents(offer.proposedPriceCents)} for offer ${offer.id} with Stripe test checkout`}
+          >
+            {paying && <Spinner />}
+            {failed ? "Retry payment" : "Pay with Stripe (test)"}
+          </button>
+        )
+      )}
+      {notConfigured && (
+        <p role="status" className="basis-full text-[11px] text-muted">
+          Stripe not configured (set STRIPE_SECRET_KEY)
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="basis-full font-mono text-[11px] text-danger">
+          Checkout failed: {error}
+        </p>
+      )}
+    </div>
   );
 }

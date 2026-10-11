@@ -10,6 +10,9 @@ export const MAX_PRICE_CENTS = 2_147_483_647;
 
 export const marketplaceIdSchema = z.enum(MARKETPLACE_IDS);
 
+/** Darwin Search v3 `responseId` format (`sresp_<uuid>`). */
+export const DARWIN_RESPONSE_ID_RE = /^sresp_[a-f0-9-]{36}$/;
+
 export const positiveCentsSchema = z
   .number()
   .int("price must be integer cents")
@@ -23,8 +26,16 @@ export const searchRequestSchema = z
     maxPriceCents: positiveCentsSchema.optional(),
     location: z.string().trim().min(1).max(200).optional(),
     includeExternalAgents: z.boolean().optional().default(true),
+    previousResponseId: z
+      .string()
+      .regex(DARWIN_RESPONSE_ID_RE, "previousResponseId must be a Darwin responseId (sresp_…)")
+      .optional(),
   })
-  .strict();
+  .strict()
+  .refine((r) => !(r.previousResponseId && r.includeExternalAgents === false), {
+    message: "previousResponseId requires includeExternalAgents to be true",
+    path: ["previousResponseId"],
+  });
 export type SearchRequestInput = z.input<typeof searchRequestSchema>;
 
 /**

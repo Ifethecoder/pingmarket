@@ -2,7 +2,10 @@ import type {
   CreateOfferRequest,
   Listing,
   Marketplace,
+  MarketplaceId,
+  Message,
   Offer,
+  Order,
   SearchRequest,
   SearchResponse,
 } from "@/lib/types";
@@ -94,4 +97,53 @@ export const postOffer = (body: Pick<CreateOfferRequest, "listingId" | "priceCen
 export const acceptOffer = (offerId: string) =>
   apiFetch<{ offer: Offer }>(`/api/offers/${encodeURIComponent(offerId)}/accept`, {
     method: "POST",
+  });
+
+export const counterOffer = (offerId: string, priceCents: number) =>
+  apiFetch<{ offer: Offer }>(`/api/offers/${encodeURIComponent(offerId)}/counter`, {
+    method: "POST",
+    body: JSON.stringify({ priceCents }),
+  });
+
+export const declineOffer = (offerId: string) =>
+  apiFetch<{ offer: Offer }>(`/api/offers/${encodeURIComponent(offerId)}/decline`, {
+    method: "POST",
+  });
+
+export const getOrders = () => apiFetch<{ orders: Order[] }>("/api/orders");
+
+/** Get-or-create the order for an accepted offer (201 created, 200 existing). */
+export const postOrder = (body: { offerId: string }) =>
+  apiFetch<{ order: Order }>("/api/orders", { method: "POST", body: JSON.stringify(body) });
+
+/** Hosted Stripe test-mode Checkout URL. Never marks the order paid; only the signed webhook does. */
+export const postCheckout = (orderId: string) =>
+  apiFetch<{ url: string; sessionId: string }>(`/api/orders/${encodeURIComponent(orderId)}/checkout`, {
+    method: "POST",
+  });
+
+// ---------------------------------------------------------------------------
+// Simulated SMS handsets (/sim). Shapes from src/lib/sms/simulator.ts.
+// ---------------------------------------------------------------------------
+
+export type SimActor = "seller" | "buyer";
+
+export interface SimHandset {
+  actor: SimActor;
+  userId: string;
+  number: string;
+}
+
+export interface SimThread {
+  handset: SimHandset;
+  serviceNumber: string;
+  messages: Message[];
+}
+
+export const getSimThread = (actor: SimActor) => apiFetch<SimThread>(`/api/sms/simulate?actor=${actor}`);
+
+export const postSimSms = (body: { actor: SimActor; body: string; marketplaceId?: MarketplaceId }) =>
+  apiFetch<{ inbound: Message; outbound: Message[] }>("/api/sms/simulate", {
+    method: "POST",
+    body: JSON.stringify(body),
   });

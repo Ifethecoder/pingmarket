@@ -1,8 +1,10 @@
+import { eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "../db";
-import { messages } from "../db/schema";
+import { messages, offers } from "../db/schema";
 import { createTestDb } from "../db/testing";
 import { createOffer } from "../offers/service";
+import { getOrCreateOrderForOffer, markOrderPaid } from "../orders/service";
 import { runSearch } from "../search/service";
 import { formatMoney, listTraceEvents, maskPhone } from "./service";
 
@@ -53,5 +55,29 @@ describe("listTraceEvents", () => {
 
   it("respects the limit", async () => {
     expect(await listTraceEvents(3, db)).toHaveLength(3);
+  });
+});
+
+describe("listTraceEvents orders", () => {
+  it("emits order_created and, once the webhook marks it paid, a payment event", async () => {
+    const orderDb = await createTestDb();
+    const offer = await createOffer({ listingId: "D2", priceCents: 11000 }, orderDb);
+    await orderDb.update(offers).set({ status: "accepted" }).where(eq(offers.id, offer.id));
+    const { order } = await getOrCreateOrderForOffer(offer.id, orderDb);
+
+    let events = await listTraceEvents(50, orderDb);
+    expect(events.find((e) => e.kind === "order_created")?.summary).toBe(
+      `Order ${order.id} created for offer ${offer.id} · $110.00 pending`,
+    );
+    expect(events.some((e) => e.kind === "payment")).toBe(false);
+
+    await markOrderPaid({ orderId: order.id, sessionId: "cs_test_trace" }, orderDb);
+    events = await listTraceEvents(50, orderDb);
+    const payment = events.find((e) => e.kind === "payment");
+    expect(payment?.summary).toBe(`Order ${order.id} paid via Stripe test checkout · $110.00`);
+    expect(payment?.detail).toMatchObject({ orderId: order.id, listingId: "D2", paymentStatus: "paid" });
+    expect(events.findIndex((e) => e.kind === "payment")).toBeLessThan(
+      events.findIndex((e) => e.kind === "order_created"),
+    );
   });
 });

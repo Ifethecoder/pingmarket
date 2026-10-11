@@ -13,6 +13,13 @@ export interface DarwinDiscoveryOptions {
   maxResults?: number;
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
+  /**
+   * Follow-up: continue this Darwin response. The query is sent verbatim (no marketplace suffix) because
+   * Darwin treats it as the new current task. `searchToken` is the stored token from the first response;
+   * anonymous follow-ups are rejected without it.
+   */
+  previousResponseId?: string;
+  searchToken?: string | null;
 }
 
 export interface DarwinDiscoveryResult {
@@ -20,6 +27,11 @@ export interface DarwinDiscoveryResult {
   capabilities: DarwinCapabilityResult[];
   /** Raw Darwin response with `searchToken` removed. Persist via `summarizeForPersistence`. */
   raw?: DarwinRawSearchResponse;
+  /**
+   * Private continuation token (first response of a search only; follow-ups don't return one).
+   * Server-side only: persist it for follow-ups, never put it in an HTTP response or the trace.
+   */
+  searchToken?: string;
 }
 
 function marketplaceLabel(id: string): string {
@@ -48,18 +60,22 @@ export async function runDarwinDiscovery(
   const location = opts.location?.trim();
   if (location) context.push({ type: "text", text: `Location: ${location}` });
 
+  const isFollowUp = opts.previousResponseId !== undefined;
   const started = Date.now();
   try {
-    const raw = await darwinSearchRaw(buildDarwinQuery(query, opts.marketplaceId), {
+    const raw = await darwinSearchRaw(isFollowUp ? query.trim() : buildDarwinQuery(query, opts.marketplaceId), {
       maxResults: resolveMaxResults(opts.maxResults),
       context: context.length > 0 ? context : undefined,
+      previousResponseId: opts.previousResponseId,
+      searchToken: isFollowUp ? opts.searchToken : undefined,
       signal: opts.signal,
       fetchImpl: opts.fetchImpl,
     });
-    // Private continuation token: never persist or return it to clients.
+    // Private continuation token: split off for server-side storage; never in `raw`, outcome or trace.
+    const searchToken = raw.searchToken;
     delete raw.searchToken;
     const { outcome, capabilities } = normalizeDarwinResponse(raw, Date.now() - started);
-    return { outcome, capabilities, raw };
+    return { outcome, capabilities, raw, ...(searchToken ? { searchToken } : {}) };
   } catch (err) {
     // Server-side breadcrumb only: never log the request body or any token.
     console.warn("[darwin] search failed", {
@@ -67,7 +83,7 @@ export async function runDarwinDiscovery(
       status: err instanceof DarwinError ? err.status : undefined,
       message: err instanceof Error ? err.message : String(err),
     });
-    return { outcome: darwinErrorOutcome(err, Date.now() - started), capabilities: [] };
+    return { outcome: darwinErrorOutcome(err, Date.now() - started, opts.previousResponseId ?? null), capabilities: [] };
   }
 }
 
@@ -76,6 +92,7 @@ export function summarizeForPersistence(raw: DarwinRawSearchResponse): Record<st
   const r = raw.response;
   return {
     status: raw.status,
+    previousResponseId: raw.previousResponseId ?? null,
     assessment: r.assessment ? { outcome: r.assessment.outcome, explanation: r.assessment.explanation ?? null } : null,
     agentCount: r.agents.length,
     agents: r.agents.map((a) => ({

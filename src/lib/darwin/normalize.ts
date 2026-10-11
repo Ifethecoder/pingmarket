@@ -83,6 +83,8 @@ export function normalizeDarwinResponse(
     status: "completed",
     searchId: raw.searchId ?? null,
     responseId: raw.responseId ?? null,
+    previousResponseId: raw.previousResponseId ?? null,
+    relatedSearches: r.relatedSearches.slice(0, 3).map((s) => ({ query: s.query, reason: s.reason ?? null })),
     question: r.question ?? null,
     noMatchReason: r.noMatchReason ?? null,
     overview: r.overview ?? null,
@@ -126,14 +128,22 @@ function errorMessage(err: unknown): string {
       return "Darwin Search returned a response PingMarket could not read.";
     case "HTTP_ERROR":
       return err.status ? `Darwin Search returned HTTP ${err.status}.` : "Darwin Search returned an error.";
+    case "CONTINUATION_INVALID":
+      return "This Darwin follow-up is no longer valid (the earlier response expired or its continuation token is missing). Start a new search.";
   }
 }
 
-export function darwinErrorOutcome(err: unknown, latencyMs: number | null): DarwinSearchOutcome {
+export function darwinErrorOutcome(
+  err: unknown,
+  latencyMs: number | null,
+  previousResponseId: string | null = null,
+): DarwinSearchOutcome {
   return {
     status: "error",
     searchId: null,
     responseId: null,
+    previousResponseId,
+    relatedSearches: [],
     question: null,
     noMatchReason: null,
     overview: null,
@@ -147,6 +157,8 @@ export const DARWIN_SKIPPED_OUTCOME: DarwinSearchOutcome = Object.freeze({
   status: "skipped",
   searchId: null,
   responseId: null,
+  previousResponseId: null,
+  relatedSearches: [],
   question: null,
   noMatchReason: null,
   overview: null,

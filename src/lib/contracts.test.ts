@@ -1,5 +1,35 @@
 import { describe, expect, it } from "vitest";
-import { createListingRequestSchema, createOfferRequestSchema, positiveCentsSchema } from "./contracts";
+import {
+  createListingRequestSchema,
+  createOfferRequestSchema,
+  positiveCentsSchema,
+  searchRequestSchema,
+} from "./contracts";
+
+describe("searchRequestSchema follow-ups", () => {
+  const prev = "sresp_f0284ccd-d0fc-4d37-8733-1c040b007f29";
+
+  it("accepts a Darwin responseId as previousResponseId", () => {
+    expect(searchRequestSchema.parse({ query: "q", previousResponseId: prev })).toEqual({
+      query: "q",
+      includeExternalAgents: true,
+      previousResponseId: prev,
+    });
+  });
+
+  it.each(["srch_f0284ccd-d0fc-4d37-8733-1c040b007f29", "sresp_short", "", "SRESP_F0284CCD-D0FC-4D37-8733-1C040B007F29"])(
+    "rejects a non-responseId %j",
+    (previousResponseId) => {
+      expect(searchRequestSchema.safeParse({ query: "q", previousResponseId }).success).toBe(false);
+    },
+  );
+
+  it("rejects a follow-up that also disables external agents", () => {
+    const result = searchRequestSchema.safeParse({ query: "q", previousResponseId: prev, includeExternalAgents: false });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(["previousResponseId"]);
+  });
+});
 
 describe("createOfferRequestSchema", () => {
   it("accepts listingId + priceCents only", () => {

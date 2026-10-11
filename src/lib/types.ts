@@ -100,6 +100,13 @@ export interface SearchRequest {
   location?: string;
   /** Default true. When false the Darwin call is skipped and `darwin.status` is `skipped`. */
   includeExternalAgents?: boolean;
+  /**
+   * Darwin `responseId` from an earlier PingMarket search response (`darwin.responseId`). Continues that
+   * Darwin conversation: answer a `needs_input` question or refine the results. Darwin treats the new
+   * `query` as the current task ("latest task wins"), so send a complete request, not a bare answer.
+   * Requires `includeExternalAgents` to be true (the default). Native listings are searched with the new query.
+   */
+  previousResponseId?: string;
 }
 
 export interface NativeListingResult {
@@ -175,10 +182,20 @@ export type DarwinSearchStatus =
   /** Darwin call failed (network/5xx/timeout). Never show as "no agents exist". */
   | "error";
 
+/** A refinement Darwin suggests; send `query` as a follow-up (`previousResponseId`). */
+export interface DarwinRelatedSearch {
+  query: string;
+  reason: string | null;
+}
+
 export interface DarwinSearchOutcome {
   status: DarwinSearchStatus;
   searchId: string | null;
+  /** Send this back as `SearchRequest.previousResponseId` to follow up. */
   responseId: string | null;
+  /** Set when this outcome continued an earlier Darwin response (a follow-up). */
+  previousResponseId: string | null;
+  relatedSearches: DarwinRelatedSearch[];
   /** Present when status is `needs_input`: ask the buyer this. */
   question: string | null;
   /** Present when status is `no_match`. */

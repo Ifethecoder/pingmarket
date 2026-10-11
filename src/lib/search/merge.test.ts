@@ -46,6 +46,8 @@ const completed: DarwinSearchOutcome = {
   status: "completed",
   searchId: "s1",
   responseId: "r1",
+  previousResponseId: null,
+  relatedSearches: [],
   question: null,
   noMatchReason: null,
   overview: "overview",

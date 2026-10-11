@@ -151,6 +151,8 @@ export const agentSearches = pgTable("agent_searches", {
   query: text("query").notNull(),
   darwinSearchId: text("darwin_search_id"),
   darwinResponseId: text("darwin_response_id"),
+  /** Private Darwin continuation token (X-Search-Token for follow-ups). Never exposed via API or trace. */
+  darwinSearchToken: text("darwin_search_token"),
   status: text("status").notNull(),
   resultMetadata: jsonb("result_metadata")
     .$type<Record<string, unknown>>()

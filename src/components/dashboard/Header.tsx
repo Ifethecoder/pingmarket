@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export function Header() {
   return (
     <header className="border-b border-border bg-surface">
@@ -14,9 +16,17 @@ export function Header() {
               </p>
             </div>
           </div>
-          <h1 className="font-mono text-[11px] uppercase tracking-[0.14em] text-muted">
-            Demo dashboard · operator view
-          </h1>
+          <div className="flex items-center gap-4">
+            <Link
+              href="/sim"
+              className="rounded-md border border-border bg-surface px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              Open simulated phones →
+            </Link>
+            <h1 className="font-mono text-[11px] uppercase tracking-[0.14em] text-muted">
+              Demo dashboard · operator view
+            </h1>
+          </div>
         </div>
 
         <div
@@ -32,7 +42,9 @@ export function Header() {
           </span>
           <p>
             <strong className="font-semibold">Buyer input on this page is SIMULATED (web demo buyer).</strong>{" "}
-            It did not arrive from a third phone. Seller messages arrive via real Dial SMS on Number B.
+            It did not arrive from a third phone. The seller and buyer handsets at <code className="font-mono">/sim</code> are
+            also simulated and appear in the trace as <code className="font-mono">SIM</code>. Real seller messages arrive via
+            Dial SMS on Number B.
           </p>
         </div>
       </div>

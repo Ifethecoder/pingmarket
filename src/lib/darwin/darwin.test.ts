@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import completedFixture from "./__fixtures__/completed.json";
+import followUpFixture from "./__fixtures__/followup_no_match.json";
 import needsInputFixture from "./__fixtures__/needs_input.json";
 import { DARWIN_SEARCH_URL, DarwinError, darwinSearchRaw } from "./client";
 import { DARWIN_SKIPPED_OUTCOME, darwinErrorOutcome, normalizeDarwinAgent, normalizeDarwinResponse } from "./normalize";
@@ -98,6 +99,91 @@ describe("darwinSearchRaw request", () => {
     const b = stubFetch(() => jsonResponse(completedFixture));
     await runDarwinDiscovery("q", { fetchImpl: b.fetchImpl });
     expect(bodyOf(b.calls[0])).toStrictEqual({ query: "q", maxResults: 3 });
+  });
+});
+
+describe("follow-ups (previousResponseId + X-Search-Token)", () => {
+  const PREV = followUpFixture.previousResponseId;
+
+  it("sends previousResponseId, the token header and the verbatim query (no marketplace suffix)", async () => {
+    const { fetchImpl, calls } = stubFetch(() => jsonResponse(followUpFixture));
+    const result = await runDarwinDiscovery("  only agents that can deliver to Berkeley ", {
+      fetchImpl,
+      marketplaceId: "furniture",
+      previousResponseId: PREV,
+      searchToken: SECRET_TOKEN,
+    });
+    expect(bodyOf(calls[0])).toStrictEqual({
+      query: "only agents that can deliver to Berkeley",
+      maxResults: 5,
+      previousResponseId: PREV,
+    });
+    expect(headersOf(calls[0])["X-Search-Token"]).toBe(SECRET_TOKEN);
+
+    // Real follow-up shape: same searchId, new responseId, previousResponseId set, no searchToken issued.
+    expect(result.outcome.status).toBe("no_match");
+    expect(result.outcome.previousResponseId).toBe(PREV);
+    expect(result.outcome.searchId).toBe(followUpFixture.searchId);
+    expect(result.outcome.responseId).toBe(followUpFixture.responseId);
+    expect(result.searchToken).toBeUndefined();
+    expect(summarizeForPersistence(result.raw!)).toMatchObject({ status: "no_match", previousResponseId: PREV });
+  });
+
+  it("does not send the token header on a first search, and never when token is null", async () => {
+    const a = stubFetch(() => jsonResponse(completedFixture));
+    await runDarwinDiscovery("q", { fetchImpl: a.fetchImpl, searchToken: SECRET_TOKEN });
+    expect(headersOf(a.calls[0])).not.toHaveProperty("X-Search-Token");
+    expect(bodyOf(a.calls[0])).not.toHaveProperty("previousResponseId");
+
+    const b = stubFetch(() => jsonResponse(followUpFixture));
+    await runDarwinDiscovery("q", { fetchImpl: b.fetchImpl, previousResponseId: PREV, searchToken: null });
+    expect(headersOf(b.calls[0])).not.toHaveProperty("X-Search-Token");
+  });
+
+  it.each([
+    [400, "SEARCH_RESPONSE_EXPIRED"],
+    [403, "SEARCH_TOKEN_REQUIRED"],
+    [403, undefined],
+  ])("HTTP %s %s on a follow-up → CONTINUATION_INVALID, no retry, UI-safe error outcome", async (status, code) => {
+    const { fetchImpl, calls } = stubFetch(() => jsonResponse(code ? { code } : {}, status));
+    await expect(
+      darwinSearchRaw("q", { fetchImpl, previousResponseId: PREV, searchToken: SECRET_TOKEN }),
+    ).rejects.toMatchObject({ code: "CONTINUATION_INVALID", status });
+    expect(calls).toHaveLength(1);
+
+    const result = await runDarwinDiscovery("q", { fetchImpl, previousResponseId: PREV, searchToken: SECRET_TOKEN });
+    expect(result.outcome.status).toBe("error");
+    expect(result.outcome.previousResponseId).toBe(PREV);
+    expect(result.outcome.error).toMatch(/follow-up is no longer valid/);
+    expect(result.capabilities).toEqual([]);
+  });
+
+  it("a 400 on a first search stays HTTP_ERROR", async () => {
+    const { fetchImpl } = stubFetch(() => jsonResponse({ code: "SEARCH_RESPONSE_EXPIRED" }, 400));
+    await expect(darwinSearchRaw("q", { fetchImpl })).rejects.toMatchObject({ code: "HTTP_ERROR", status: 400 });
+  });
+
+  it("surfaces relatedSearches (max 3, malformed entries dropped) as follow-up suggestions", async () => {
+    const withRelated = {
+      ...completedFixture,
+      response: {
+        ...completedFixture.response,
+        relatedSearches: [
+          { query: "WCAG audit with PDF report", reason: "Narrower deliverable" },
+          { query: "no reason given" },
+          { nope: true },
+          { query: "x3", reason: "r" },
+          { query: "x4", reason: "r" },
+        ],
+      },
+    };
+    const { fetchImpl } = stubFetch(() => jsonResponse(withRelated));
+    const { outcome } = await runDarwinDiscovery("q", { fetchImpl });
+    expect(outcome.relatedSearches).toStrictEqual([
+      { query: "WCAG audit with PDF report", reason: "Narrower deliverable" },
+      { query: "no reason given", reason: null },
+      { query: "x3", reason: "r" },
+    ]);
   });
 });
 
@@ -297,13 +383,16 @@ describe("searchToken privacy", () => {
 
     expect(result.raw).toBeDefined();
     const summary = summarizeForPersistence(result.raw!);
-    for (const value of [result.outcome, result.capabilities, result.raw, summary, result]) {
+    for (const value of [result.outcome, result.capabilities, result.raw, summary]) {
       expect(JSON.stringify(value)).not.toContain(SECRET_TOKEN);
       expect(JSON.stringify(value)).not.toContain("searchToken");
     }
+    // The token is split off for server-side storage only (see runSearch), never embedded in response data.
+    expect(result.searchToken).toBe(SECRET_TOKEN);
 
     expect(summary).toStrictEqual({
       status: "completed",
+      previousResponseId: null,
       assessment: { outcome: "partial", explanation: completedFixture.response.assessment.explanation },
       agentCount: 2,
       agents: [
