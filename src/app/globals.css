@@ -1,26 +1,91 @@
 @import "tailwindcss";
 
+/*
+ * PingMarket operator-console tokens.
+ * native   = PingMarket inventory (negotiable)            -> emerald, solid
+ * external = Darwin-discovered capability (not inventory) -> violet, dashed
+ * accent   = the "ping" signal (live state, primary actions)
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: light;
+  --background: #f4f6f8;
+  --foreground: #0f1419;
+  --surface: #ffffff;
+  --surface-2: #eef1f4;
+  --border: #d9dee5;
+  --muted: #5b6573;
+  --accent: #0891b2;
+  --accent-ink: #ffffff;
+  --success: #15803d;
+  --warning: #b45309;
+  --danger: #c62828;
+  --native: #059669;
+  --external: #6d5bd0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --background: #0b0e13;
+    --foreground: #e6e9ee;
+    --surface: #12161d;
+    --surface-2: #191e27;
+    --border: #262d39;
+    --muted: #8b95a5;
+    --accent: #22d3ee;
+    --accent-ink: #062a33;
+    --success: #4ade80;
+    --warning: #fbbf24;
+    --danger: #f87171;
+    --native: #34d399;
+    --external: #a59af7;
+  }
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-native: var(--native);
+  --color-external: var(--external);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  --animate-fresh: fresh 3.6s ease-out 1;
+  --animate-toast-in: toast-in 180ms ease-out 1;
+
+  @keyframes fresh {
+    0%,
+    25% {
+      background-color: color-mix(in oklab, var(--native) 24%, transparent);
+    }
+    100% {
+      background-color: transparent;
+    }
+  }
+
+  @keyframes toast-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
 }
