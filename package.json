@@ -1,0 +1,18 @@
+{
+  "scripts": {
+    "dial:doctor": "node --env-file=.env.local --import tsx scripts/dial/doctor.ts",
+    "dial:numbers": "node --env-file=.env.local --import tsx scripts/dial/doctor.ts --numbers",
+    "dial:serve": "node --env-file=.env.local --import tsx scripts/dial/server.ts",
+    "dial:send-test": "node --env-file=.env.local --import tsx scripts/dial/send-test.ts",
+    "test:messaging": "node --import tsx --test tests/messaging/*.test.ts",
+    "typecheck:messaging": "tsc -p tsconfig.messaging.json"
+  },
+  "dependencies": {
+    "@getdial/sdk": "^0.41.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
