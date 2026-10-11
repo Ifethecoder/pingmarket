@@ -12,7 +12,9 @@ function fixture() {
   const messages = new Map<string, ReceivedSms>();
   let state = {
     conversations: new Map<string, SellerConversation>(),
-    listings: [] as NewSellerListing[], replies: [] as string[],
+    listings: [] as (Omit<NewSellerListing, "status"> & { status: "available" | "reserved" | "sold" | "removed"; hasActiveOffers?: boolean })[], replies: [] as string[],
+    alertsDisabled: new Set<string>(),
+    marketing: [] as { participantId: string; cancelled: boolean }[],
     events: new Set<string>(), providerMessages: new Set<string>(),
   };
   const store: SellerMessageStore = {
@@ -25,6 +27,16 @@ function fixture() {
         actor: actors.get(message.from) ?? { participantId: message.from, marketplaceId: "furniture" },
         conversation: staged.conversations.get(scope) ?? {},
         async createListing(listing) { staged.listings.push(listing); return { code: `D${staged.listings.length}` }; },
+        async lockListing(code) {
+          const listing = staged.listings[Number(code.slice(1)) - 1];
+          return listing ? { ...listing, hasActiveOffers: listing.hasActiveOffers ?? false } : null;
+        },
+        async updateListing(code, change) { Object.assign(staged.listings[Number(code.slice(1)) - 1], change); },
+        async disableAlerts() {
+          const participantId = actors.get(message.from)?.participantId ?? message.from;
+          staged.alertsDisabled.add(participantId);
+          for (const intent of staged.marketing) if (intent.participantId === participantId) intent.cancelled = true;
+        },
         async saveConversation(conversation) { staged.conversations.set(scope, conversation); },
         async enqueueReply(body) { if (failReply) throw new Error("storage failed"); staged.replies.push(body); },
       });
@@ -134,4 +146,91 @@ test("atomic adapter rolls back a listing on reply failure; retries and duplicat
   assert.equal(await f.router.process(repeated), "duplicate");
   assert.equal(f.state().listings.length, 1);
   assert.equal(f.state().replies.length, 1);
+});
+
+test("owner edits one validated field at a time; unsupported fields and prices cannot mutate a listing", async () => {
+  const f = fixture();
+  await f.router.process(f.receive("SELL desk, $120, Berkeley"));
+  for (const body of ["EDIT D1 price $99.95", "EDIT D1 title Oak desk", "EDIT D1 location Oakland", "EDIT D1 description Pickup after 5"]) {
+    await f.router.process(f.receive(body));
+    assert.match(f.state().replies.at(-1)!, /Updated D1/);
+  }
+  assert.equal(f.state().listings[0].priceCents, 9995);
+  assert.equal(f.state().listings[0].title, "Oak desk");
+  assert.equal(f.state().listings[0].location, "Oakland");
+  assert.equal(f.state().listings[0].description, "Pickup after 5");
+  const before = structuredClone(f.state().listings);
+  for (const changes of ["sellerId attacker", "visibility cross_market", "price -10", "price 10.001", "price 100 location Oakland", `title ${"a".repeat(121)}`]) {
+    await f.router.process(f.receive(`EDIT D1 ${changes}`));
+    assert.deepEqual(f.state().listings, before);
+    assert.match(f.state().replies.at(-1)!, /Use EDIT/);
+  }
+});
+
+test("nonowners and unknown codes cannot edit or remove listings", async () => {
+  const f = fixture();
+  await f.router.process(f.receive("SELL desk, $120, Berkeley"));
+  for (const body of ["EDIT D1 price 1", "REMOVE D1", "REMOVE D999"]) {
+    await f.router.process(f.receive(body, { from: "+15550000003" }));
+    assert.match(f.state().replies.at(-1)!, /not found or you do not own/);
+  }
+  assert.equal(f.state().listings[0].priceCents, 12000);
+  assert.equal(f.state().listings[0].status, "available");
+});
+
+test("active offers and reserved/sold listings prevent edits and removal", async () => {
+  const f = fixture();
+  await f.router.process(f.receive("SELL desk, $120, Berkeley"));
+  f.state().listings[0].hasActiveOffers = true;
+  for (const body of ["EDIT D1 price 1", "REMOVE D1"]) {
+    await f.router.process(f.receive(body));
+    assert.match(f.state().replies.at(-1)!, /active offers/);
+  }
+  f.state().listings[0].hasActiveOffers = false;
+  for (const status of ["reserved", "sold"] as const) {
+    f.state().listings[0].status = status;
+    for (const body of ["EDIT D1 price 1", "REMOVE D1"]) {
+      await f.router.process(f.receive(body));
+      assert.match(f.state().replies.at(-1)!, /Only available/);
+      assert.equal(f.state().listings[0].status, status);
+      assert.equal(f.state().listings[0].priceCents, 12000);
+    }
+  }
+});
+
+test("removal is repeatable and edit/remove roll back if confirmation cannot be saved", async () => {
+  const f = fixture();
+  await f.router.process(f.receive("SELL desk, $120, Berkeley"));
+  for (const body of ["EDIT D1 price 1", "REMOVE D1"]) {
+    f.failReply(true);
+    await assert.rejects(f.router.process(f.receive(body)), /storage failed/);
+    assert.equal(f.state().listings[0].status, "available");
+    assert.equal(f.state().listings[0].priceCents, 12000);
+  }
+  f.failReply(false);
+  const event = f.receive("REMOVE D1");
+  await f.router.process(event);
+  assert.equal(await f.router.process(event), "duplicate");
+  await f.router.process(f.receive("REMOVE D1"));
+  assert.match(f.state().replies.at(-1)!, /already removed/);
+  await f.router.process(f.receive("EDIT D1 price 5"));
+  assert.match(f.state().replies.at(-1)!, /Only available/);
+});
+
+test("late STOP disables only the actor's alerts, cancels pending marketing, and queues no reply", async () => {
+  const f = fixture();
+  const stop = f.receive("STOP");
+  f.state().marketing.push({ participantId: "+15550000001", cancelled: false }, { participantId: "+15550000003", cancelled: false });
+  f.advance(1000);
+  await f.router.process(f.receive("SELL desk"));
+  const before = structuredClone(f.state().conversations);
+  const replies = f.state().replies.length;
+  await f.router.process(stop);
+  assert.equal(await f.router.process(stop), "duplicate");
+  assert.deepEqual([...f.state().alertsDisabled], ["+15550000001"]);
+  assert.deepEqual(f.state().marketing.map(intent => intent.cancelled), [true, false]);
+  assert.deepEqual(f.state().conversations, before);
+  assert.equal(f.state().replies.length, replies);
+  await f.router.process(f.receive("HELP"));
+  assert.equal(f.state().alertsDisabled.has("+15550000001"), true);
 });

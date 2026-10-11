@@ -12,7 +12,7 @@ npm run typecheck:messaging
 npm run test:messaging
 ```
 
-Tests never send an SMS or contact an external database. Connectivity tests use temporary local SQLite journals; webhook and seller-router tests use test-only memory adapters. Router deduplication/rollback checks demonstrate the proposed adapter contract, not production database uniqueness, concurrency, or crash recovery. All 35 tests and messaging type checking pass.
+Tests never send an SMS or contact an external database. Connectivity tests use temporary local SQLite journals; webhook and seller-router tests use test-only memory adapters. Router deduplication/rollback checks demonstrate the proposed adapter contract, not production database uniqueness, concurrency, or crash recovery. All 40 tests and messaging type checking pass.
 
 **Implemented modules**
 
@@ -79,10 +79,16 @@ Drafts are scoped by participant and service, expire 30 minutes after starting (
 
 Created listings use USD, available status, and marketplace-only visibility by default. Cross-market visibility requires a server-resolved recorded consent ID; the router does not collect that consent yet. Seller identity and furniture/creative marketplace come from trusted context. Codes currently require uppercase D-prefixed identifiers, pending shared agreement. No schema or application runtime is introduced.
 
-Only SELL, clarification, CANCEL, and HELP execute in this slice. Other recognized commands report that they are not connected and never become missing listing fields. In particular, STOP does not yet persist opt-out, so this slice must not be mounted as a complete live command handler. EDIT/REMOVE authorization, offer invalidation, search, and negotiation remain subsequent work. The existing live connectivity harness still only responds to PING.
+SELL, clarification, CANCEL, HELP, EDIT, REMOVE, and STOP execute in this slice. Other recognized commands report that they are not connected and never become missing listing fields. Search and negotiation remain subsequent work. The existing live connectivity harness still only responds to PING; application storage and provider opt-out integration are not wired.
+
+EDIT changes one field per message: `EDIT D42 price $100`, `EDIT D42 title Oak desk`, `EDIT D42 location Oakland`, or `EDIT D42 description Pickup after 5`. Other fields cannot be edited. REMOVE soft-removes the listing; repeated removal reports it already removed. Both actions require the resolved seller's ownership and available status, and are blocked if active offers exist. This conservative policy is proposed for B review; it does not silently invalidate offers.
+
+`lockListing` must hold a listing-level lock through commit. Offer creation and acceptance must use the same lock and recheck listing status/terms, including when there were zero offers at read time. `hasActiveOffers` must include open and countered offers that remain actionable. Locking existing offer rows alone does not prevent a new offer racing with removal. Update and confirmation roll back together. The memory fixture does not prove database concurrency safety; B's adapter needs an integration test for this race.
+
+STOP invokes `disableAlerts` for the resolved participant, even for late messages, without lowering the conversation timestamp or changing draft/listing sharing consent. The adapter must disable alerts and cancel all unsent marketing intents atomically with event completion. The dispatcher must recheck consent before sending marketing; an already in-flight provider send cannot be recalled by this contract. No STOP reply is queued by this router, and ordinary commands never re-enable alerts. Provider-specific opt-out and transactional delivery behavior must be integrated before live use. This change supplies the business boundary, not a production notification dispatcher.
 
 1. B confirms the framework/runtime, ID/public-code formats (D/O prefixes are provisional), authenticated buyer context, and persistence interface. A does not create B's schema or migrate the database.
-2. Review the implemented seller router's proposed transaction interface, listing fields, consent reference, draft expiry, and ordering policy. B implements durable storage; A wires it into the agreed runtime and extends authorized EDIT/REMOVE and STOP handling.
+2. Review the implemented seller router's proposed transaction interface, listing fields, consent reference, draft expiry, ordering, listing locks, and STOP cancellation requirements. B implements durable storage; A wires it into the agreed runtime and checks provider opt-out handling.
 3. Define atomic offer acceptance/reservation/order creation and request idempotency. Implement A's negotiation service, offer endpoints, and protected buyer simulator.
 4. B supplies native/Darwin search and dashboard; A supplies normalized input, source-aware SMS formatting, and event provenance. Preserve the PRD's shared search response shape.
 5. Two Dial numbers, the webhook signing secret, and the live inbound/reply test are configured and verified. The remaining live tests are listing creation and negotiation against B's application database. Those are required to close the marketplace PRD milestones.

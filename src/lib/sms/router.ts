@@ -1,4 +1,4 @@
-import { clarifyListing, parseSms } from "./intent.ts";
+import { clarifyListing, parsePrice, parseSms } from "./intent.ts";
 import type { ListingDraft, ReceivedSms } from "./ports.ts";
 
 /** Proposed application adapter contract, pending Developer B review. */
@@ -27,6 +27,18 @@ export interface SellerTransaction {
   actor: SellerContext;
   conversation: SellerConversation;
   createListing(listing: NewSellerListing): Promise<{ code: string }>;
+  /** Hold a listing lock through commit. Offer creation/acceptance must use the
+   * same lock, including when there are currently zero active offers. */
+  lockListing(code: string): Promise<{
+    sellerId: string;
+    status: "available" | "reserved" | "sold" | "removed";
+    hasActiveOffers: boolean;
+  } | null>;
+  updateListing(code: string, change: ListingDraft | { status: "removed" }): Promise<void>;
+  /** Disable this participant's alerts and cancel all unsent marketing intents
+   * atomically. Dispatcher must recheck consent before sending marketing SMS.
+   * This does not revoke listing sharing consent or change provider opt-out. */
+  disableAlerts(): Promise<void>;
   saveConversation(conversation: SellerConversation): Promise<void>;
   /** Persist intent only; do not call Dial inside this transaction. */
   enqueueReply(body: string): Promise<void>;
@@ -45,7 +57,20 @@ export interface SellerMessageStore {
 }
 
 const draftLifetimeMs = 30 * 60 * 1000;
-const help = "To list: SELL oak desk, $120, Berkeley, pickup only. Reply CANCEL to discard an unfinished listing. HELP shows these instructions.";
+const help = "SELL oak desk, $120, Berkeley, pickup only. EDIT D42 price $100 (or title/location/description followed by text). REMOVE D42. CANCEL discards a draft. STOP disables alerts.";
+
+function parseEdit(changes: string): ListingDraft | null {
+  const match = /^(title|price|location|description)\s+(.+)$/is.exec(changes);
+  if (!match) return null;
+  const field = match[1].toLowerCase();
+  const value = match[2].trim();
+  if (field === "price") {
+    const priceCents = parsePrice(value);
+    return priceCents === null ? null : { priceCents };
+  }
+  const limit = field === "title" ? 120 : field === "location" ? 160 : 1000;
+  return value && value.length <= limit ? { [field]: value } : null;
+}
 const prompts = {
   title: "What are you selling? Reply with a title, or CANCEL.",
   priceCents: "What is the price? Reply with a positive amount, for example $120, or CANCEL.",
@@ -61,6 +86,14 @@ export function createSellerRouter(store: SellerMessageStore, now: () => number 
       return store.process(eventId, async (message, tx) => {
         const occurredAt = Date.parse(message.occurredAt);
         if (!Number.isFinite(occurredAt)) throw new Error("Invalid stored message time");
+        // Honor opt-out even when delivered late; do not send an application
+        // acknowledgement until provider-specific opt-out behavior is integrated.
+        if (parseSms(message.body).type === "stop") {
+          await tx.disableAlerts();
+          await tx.saveConversation({ ...tx.conversation,
+            lastOccurredAt: Math.max(occurredAt, tx.conversation.lastOccurredAt ?? occurredAt) });
+          return;
+        }
         // A late clarification must not modify a newer draft. Equal timestamps
         // use the adapter's serialized receipt order; provider time is not a queue.
         if (tx.conversation.lastOccurredAt !== undefined && occurredAt < tx.conversation.lastOccurredAt) {
@@ -75,6 +108,28 @@ export function createSellerRouter(store: SellerMessageStore, now: () => number 
         let reply: string;
 
         switch (intent.type) {
+          case "edit":
+          case "remove": {
+            const change = intent.type === "edit" ? parseEdit(intent.changes) : { status: "removed" as const };
+            if (!change) {
+              reply = "Use EDIT D42 price $100, or EDIT D42 title/location/description followed by new text. Change one field per message.";
+              break;
+            }
+            const listing = await tx.lockListing(intent.listingCode);
+            if (!listing || listing.sellerId !== tx.actor.participantId) {
+              reply = "Listing not found or you do not own it.";
+            } else if (intent.type === "remove" && listing.status === "removed") {
+              reply = `${intent.listingCode} is already removed.`;
+            } else if (listing.status !== "available") {
+              reply = "Only available listings can be changed or removed.";
+            } else if (listing.hasActiveOffers) {
+              reply = "This listing has active offers. Resolve them before editing or removing it.";
+            } else {
+              await tx.updateListing(intent.listingCode, change);
+              reply = `${intent.type === "edit" ? "Updated" : "Removed"} ${intent.listingCode}.`;
+            }
+            break;
+          }
           case "sell": {
             // Revalidate extracted fields at the business boundary, including
             // persisted drafts. Identity and sharing are never extracted fields.
@@ -117,7 +172,6 @@ export function createSellerRouter(store: SellerMessageStore, now: () => number 
             break;
           default:
             // Explicit commands must never be swallowed as clarification text.
-            // STOP needs the shared consent/provider integration before live use.
             reply = "This command is not connected in the seller flow yet. Send HELP for available commands.";
         }
         await tx.saveConversation(conversation);
