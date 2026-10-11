@@ -12,7 +12,7 @@ npm run typecheck:messaging
 npm run test:messaging
 ```
 
-Tests use fake transport and an in-memory inbox under `tests/messaging/` only. They never send an SMS or contact a database. Their deduplication checks verify the handler/adapter boundary, not production database uniqueness or crash recovery.
+Tests never send an SMS or contact an external database. Connectivity tests use temporary local SQLite journals; webhook and seller-router tests use test-only memory adapters. Router deduplication/rollback checks demonstrate the proposed adapter contract, not production database uniqueness, concurrency, or crash recovery. All 35 tests and messaging type checking pass.
 
 **Implemented modules**
 
@@ -23,6 +23,7 @@ Tests use fake transport and an in-memory inbox under `tests/messaging/` only. T
 | `src/lib/dial/client.ts` | Dial SDK transport; recipient allowlist, explicit send enablement, one attempt, safe result classification |
 | `src/lib/sms/intent.ts` | Pure command/listing parsing and missing-field clarification; no side effects |
 | `src/lib/sms/ports.ts` | Proposed inbox/sender interfaces and extracted draft shape; no database schema |
+| `src/lib/sms/router.ts` | Seller routing, draft lifecycle, validation, trusted ownership/visibility, and proposed atomic processing boundary |
 
 **First contract to agree: inbound storage**
 
@@ -72,8 +73,16 @@ Supported listing forms include both PRD examples and `I'd like to sell my oak d
 
 **Remaining agreements and work**
 
+The seller slice can now be exercised through `createSellerRouter(store).process(eventId)`. `SellerMessageStore.process` must load the immutable received message, resolve the actor from its sender/service context, serialize each conversation, and deduplicate both provider identifiers before invoking the callback. Commit listing creation, draft changes, queued reply, and event completion together. Roll back everything on failure. Do not send SMS inside the callback; transaction retries must not send messages. B supplies the application adapter and recovery mechanism.
+
+Drafts are scoped by participant and service, expire 30 minutes after starting (clarifications do not extend expiry), and are replaced by a new SELL. HELP and other explicit commands preserve the draft; CANCEL clears it. Older provider timestamps are rejected with a resend prompt; equal timestamps follow serialized receipt order. This is a conservative late-message policy, not proof of provider ordering. Confirm this policy with B.
+
+Created listings use USD, available status, and marketplace-only visibility by default. Cross-market visibility requires a server-resolved recorded consent ID; the router does not collect that consent yet. Seller identity and furniture/creative marketplace come from trusted context. Codes currently require uppercase D-prefixed identifiers, pending shared agreement. No schema or application runtime is introduced.
+
+Only SELL, clarification, CANCEL, and HELP execute in this slice. Other recognized commands report that they are not connected and never become missing listing fields. In particular, STOP does not yet persist opt-out, so this slice must not be mounted as a complete live command handler. EDIT/REMOVE authorization, offer invalidation, search, and negotiation remain subsequent work. The existing live connectivity harness still only responds to PING.
+
 1. B confirms the framework/runtime, ID/public-code formats (D/O prefixes are provisional), authenticated buyer context, and persistence interface. A does not create B's schema or migrate the database.
-2. Define listing-write and draft operations, including seller opt-in, transaction boundaries, message ordering, and queued confirmation. Implement A's router against the agreed adapter.
+2. Review the implemented seller router's proposed transaction interface, listing fields, consent reference, draft expiry, and ordering policy. B implements durable storage; A wires it into the agreed runtime and extends authorized EDIT/REMOVE and STOP handling.
 3. Define atomic offer acceptance/reservation/order creation and request idempotency. Implement A's negotiation service, offer endpoints, and protected buyer simulator.
 4. B supplies native/Darwin search and dashboard; A supplies normalized input, source-aware SMS formatting, and event provenance. Preserve the PRD's shared search response shape.
 5. Two Dial numbers, the webhook signing secret, and the live inbound/reply test are configured and verified. The remaining live tests are listing creation and negotiation against B's application database. Those are required to close the marketplace PRD milestones.

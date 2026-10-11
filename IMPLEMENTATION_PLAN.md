@@ -115,7 +115,9 @@ Target branch when implementation resumes: `feat/dial-messaging`. Do not impleme
 
 Started `feat/dial-messaging`. Signature verification, an injectable webhook handler, a single-attempt Dial sender, and initial parser/clarification functions are implemented. Type checking and 28 tests pass, including local journal restart/deduplication checks. On October 11, 2026, the signed webhook ping returned HTTP 200 and the live Number B → A PING / A → B reply completed, with both deliveries confirmed in Dial history. This proves Dial connectivity using the local test journal; the shared application inbox contract and marketplace database integration remain open.
 
-Next, agree participant, listing-write, event-store, search, and offer-transaction contracts with B, then wire the handler into B's scaffold and implement A's router. See `docs/DEVELOPER_A_HANDOFF.md` for module boundaries, assumptions, and outstanding integration work. Do not substitute fixtures for durable persistence or live-demo evidence.
+The initial seller router is now implemented in `src/lib/sms/router.ts`: SELL, missing-field questions, scoped 30-minute drafts, CANCEL, HELP, listing validation, trusted seller/marketplace/consent context, and queued confirmation. It rejects messages older than the conversation watermark rather than applying them to newer drafts. The proposed transaction adapter groups listing/draft writes, outbound intent, and event completion; a test-only adapter demonstrates rollback and duplicate handling. Type checking and all 35 messaging tests pass. No live marketplace integration is claimed.
+
+Next, have B review `SellerMessageStore` and supply its durable implementation, then wire processing into the shared application runtime. Add authorized EDIT/REMOVE after agreeing how changes close existing offers. STOP consent persistence, search, negotiation, and the live hour-4 integration check remain open. See `docs/DEVELOPER_A_HANDOFF.md` for module boundaries and adapter requirements. Do not substitute fixtures for durable persistence or live-demo evidence.
 
 **Review references**
 
