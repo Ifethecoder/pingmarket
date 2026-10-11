@@ -1,6 +1,12 @@
 import { count } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
-import { createListing, getListing, listListings, updateListingStatus } from "../listings/service";
+import {
+  createListing,
+  getListing,
+  ListingError,
+  listListings,
+  updateListingStatus,
+} from "../listings/service";
 import { createOffer, getOffer, listOffers, OfferError } from "../offers/service";
 import type { Db } from "./index";
 import { marketplaces } from "./schema";
@@ -12,6 +18,15 @@ let db: Db;
 beforeAll(async () => {
   db = await createTestDb();
 });
+
+async function expectListingError(p: Promise<unknown>, code: ListingError["code"]) {
+  const err = await p.then(
+    () => null,
+    (e: unknown) => e,
+  );
+  expect(err).toBeInstanceOf(ListingError);
+  expect((err as ListingError).code).toBe(code);
+}
 
 async function expectOfferError(p: Promise<unknown>, code: OfferError["code"]) {
   const err = await p.then(
@@ -42,10 +57,33 @@ describe("db layer", () => {
     expect(await getListing(listing.id, db)).toEqual(listing);
   });
 
-  it("createListing rejects non-positive or fractional prices", async () => {
+  it("createListing rejects non-positive, fractional or out-of-range prices", async () => {
     const base = { sellerId: "u_seller_demo", marketplaceId: "furniture" as const, title: "x" };
-    await expect(createListing({ ...base, priceCents: 0 }, db)).rejects.toThrow();
-    await expect(createListing({ ...base, priceCents: 10.5 }, db)).rejects.toThrow();
+    await expectListingError(createListing({ ...base, priceCents: 0 }, db), "INVALID_PRICE");
+    await expectListingError(createListing({ ...base, priceCents: 10.5 }, db), "INVALID_PRICE");
+    await expectListingError(createListing({ ...base, priceCents: 2_147_483_648 }, db), "INVALID_PRICE");
+  });
+
+  it("createListing validates currency and normalizes it to upper case", async () => {
+    const base = { sellerId: "u_seller_demo", marketplaceId: "furniture" as const, title: "x", priceCents: 100 };
+    await expectListingError(createListing({ ...base, currency: "12$" }, db), "INVALID_CURRENCY");
+    await expectListingError(createListing({ ...base, currency: "EURO" }, db), "INVALID_CURRENCY");
+    expect((await createListing({ ...base, currency: "eur" }, db)).currency).toBe("EUR");
+  });
+
+  it("createListing rejects unknown sellers and marketplaces", async () => {
+    await expectListingError(
+      createListing({ sellerId: "u_nobody", marketplaceId: "furniture", title: "x", priceCents: 100 }, db),
+      "SELLER_NOT_FOUND",
+    );
+    await expectListingError(
+      createListing(
+        // Direct (untyped) callers can pass an id that is not in the marketplaces table.
+        { sellerId: "u_seller_demo", marketplaceId: "garden" as "furniture", title: "x", priceCents: 100 },
+        db,
+      ),
+      "MARKETPLACE_NOT_FOUND",
+    );
   });
 
   it("createOffer on D1 opens an offer for the web buyer", async () => {
@@ -81,5 +119,22 @@ describe("db layer", () => {
       "BUYER_NOT_FOUND",
     );
     await expectOfferError(createOffer({ listingId: "D2", priceCents: -1 }, db), "INVALID_PRICE");
+    await expectOfferError(createOffer({ listingId: "D2", priceCents: 3_000_000_000 }, db), "INVALID_PRICE");
+  });
+
+  it("createOffer still accepts an explicit SMS buyer for in-process callers", async () => {
+    const offer = await createOffer({ listingId: "D2", priceCents: 9000, buyerId: "u_seller_demo", source: "sms" }, db);
+    expect(offer).toMatchObject({ buyerId: "u_seller_demo", source: "sms", lastActorId: "u_seller_demo" });
+  });
+
+  it("createOffer runs in a transaction: a failed check leaves no offer behind", async () => {
+    const before = (await listOffers({}, db)).length;
+    const results = await Promise.allSettled([
+      createOffer({ listingId: "D5", priceCents: 4000 }, db),
+      createOffer({ listingId: "D5", priceCents: 4100 }, db),
+      createOffer({ listingId: "D8", priceCents: 3000 }, db), // sold above
+    ]);
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled", "rejected"]);
+    expect((await listOffers({}, db)).length).toBe(before + 2);
   });
 });

@@ -26,9 +26,14 @@ export function internalError(context: string, err: unknown): NextResponse {
   return jsonError(500, "Internal error");
 }
 
+const MAX_BODY_BYTES = 65_536;
+
 export async function parseJsonBody(
   req: Request,
 ): Promise<{ ok: true; body: unknown } | { ok: false; response: NextResponse }> {
+  if (Number(req.headers.get("content-length")) > MAX_BODY_BYTES) {
+    return { ok: false, response: jsonError(413, "Request body too large") };
+  }
   try {
     return { ok: true, body: await req.json() };
   } catch {

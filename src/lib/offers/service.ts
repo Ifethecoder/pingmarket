@@ -1,4 +1,5 @@
 import { and, desc, eq, type SQL } from "drizzle-orm";
+import { MAX_PRICE_CENTS } from "../contracts";
 import { getDb, type Db } from "../db";
 import { nextOfferId } from "../db/ids";
 import { listings, offers, users, type OfferRow } from "../db/schema";
@@ -48,52 +49,57 @@ export function toOffer(row: OfferRow): Offer {
 
 /** Creates an `open` buyer offer (id `O{n}`, expires in 24h) on an available listing. Throws `OfferError`. */
 export async function createOffer(input: CreateOfferRequest, db?: Db): Promise<Offer> {
-  if (!Number.isInteger(input.priceCents) || input.priceCents <= 0) {
-    throw new OfferError("INVALID_PRICE", "priceCents must be a positive integer");
+  if (!Number.isInteger(input.priceCents) || input.priceCents <= 0 || input.priceCents > MAX_PRICE_CENTS) {
+    throw new OfferError("INVALID_PRICE", `priceCents must be a positive integer <= ${MAX_PRICE_CENTS}`);
   }
   const conn = db ?? (await getDb());
   const buyerId = input.buyerId ?? WEB_BUYER_ID;
   const source = input.source ?? "web_simulated";
 
-  const [listing] = await conn
-    .select()
-    .from(listings)
-    .where(eq(listings.id, input.listingId))
-    .limit(1);
-  if (!listing) {
-    throw new OfferError("LISTING_NOT_FOUND", `Listing ${input.listingId} not found`);
-  }
-  if (listing.status !== "available") {
-    throw new OfferError("LISTING_UNAVAILABLE", `Listing ${listing.id} is ${listing.status}`);
-  }
-  if (listing.sellerId === buyerId) {
-    throw new OfferError("SELF_OFFER", "Sellers cannot make offers on their own listings");
-  }
-  const [buyer] = await conn
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.id, buyerId))
-    .limit(1);
-  if (!buyer) {
-    throw new OfferError("BUYER_NOT_FOUND", `Buyer ${buyerId} not found`);
-  }
+  // Lock the listing row so a concurrent status change (sold/reserved) cannot interleave
+  // between the availability check and the insert.
+  return conn.transaction(async (tx) => {
+    const [listing] = await tx
+      .select()
+      .from(listings)
+      .where(eq(listings.id, input.listingId))
+      .limit(1)
+      .for("update");
+    if (!listing) {
+      throw new OfferError("LISTING_NOT_FOUND", `Listing ${input.listingId} not found`);
+    }
+    if (listing.status !== "available") {
+      throw new OfferError("LISTING_UNAVAILABLE", `Listing ${listing.id} is ${listing.status}`);
+    }
+    if (listing.sellerId === buyerId) {
+      throw new OfferError("SELF_OFFER", "Sellers cannot make offers on their own listings");
+    }
+    const [buyer] = await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, buyerId))
+      .limit(1);
+    if (!buyer) {
+      throw new OfferError("BUYER_NOT_FOUND", `Buyer ${buyerId} not found`);
+    }
 
-  const id = await nextOfferId(conn);
-  const [row] = await conn
-    .insert(offers)
-    .values({
-      id,
-      listingId: listing.id,
-      buyerId,
-      sellerId: listing.sellerId,
-      proposedPriceCents: input.priceCents,
-      status: "open",
-      lastActorId: buyerId,
-      source,
-      expiresAt: new Date(Date.now() + OFFER_TTL_MS),
-    })
-    .returning();
-  return toOffer(row);
+    const id = await nextOfferId(tx);
+    const [row] = await tx
+      .insert(offers)
+      .values({
+        id,
+        listingId: listing.id,
+        buyerId,
+        sellerId: listing.sellerId,
+        proposedPriceCents: input.priceCents,
+        status: "open",
+        lastActorId: buyerId,
+        source,
+        expiresAt: new Date(Date.now() + OFFER_TTL_MS),
+      })
+      .returning();
+    return toOffer(row);
+  });
 }
 
 /** Newest first. */

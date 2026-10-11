@@ -12,7 +12,9 @@ cp .env.example .env.local   # optional; everything has a working default
 npm run dev                  # http://localhost:3000 → /dashboard
 ```
 
-With no `DATABASE_URL`, the app uses an embedded Postgres ([PGlite](https://pglite.dev)) stored in `./.pglite`. It is migrated and seeded automatically on first request (2 marketplaces, 4 demo users, listings `D1`–`D8`). Delete `./.pglite` to reset.
+`DIAL_NUMBER_B` (if set) becomes the phone number of the seeded demo seller `u_seller_demo`; set it before the first seed (or reset the DB) for it to take effect. `npm run db:migrate` / `db:seed` read `.env.local` and `.env` automatically.
+
+With no `DATABASE_URL`, the app uses an embedded Postgres ([PGlite](https://pglite.dev)) stored in `./.pglite`. It is migrated and seeded automatically on first request (2 marketplaces, 4 demo users, listings `D1`–`D8`). Delete `./.pglite` to reset. Embedded PGlite mode needs a writable working directory and the `drizzle/` folder at runtime, so it is for local/demo use; set `DATABASE_URL` for serverless/production deploys.
 
 To use Supabase/Postgres instead:
 

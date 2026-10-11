@@ -1,8 +1,25 @@
 import { and, desc, eq, type SQL } from "drizzle-orm";
+import { MAX_PRICE_CENTS } from "../contracts";
 import { getDb, type Db } from "../db";
 import { nextListingId } from "../db/ids";
-import { listings, type ListingRow } from "../db/schema";
+import { listings, marketplaces, users, type ListingRow } from "../db/schema";
 import type { CreateListingInput, Listing, ListingStatus, MarketplaceId } from "../types";
+
+export type ListingErrorCode =
+  | "SELLER_NOT_FOUND"
+  | "MARKETPLACE_NOT_FOUND"
+  | "INVALID_PRICE"
+  | "INVALID_CURRENCY";
+
+export class ListingError extends Error {
+  constructor(
+    public readonly code: ListingErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ListingError";
+  }
+}
 
 export interface ListingFilter {
   marketplaceId?: MarketplaceId;
@@ -26,12 +43,30 @@ function toListing(row: ListingRow): Listing {
   };
 }
 
-/** Creates an `available` listing with a minted `D{n}` id. Throws on non-positive / non-integer price. */
+/**
+ * Creates an `available` listing with a minted `D{n}` id.
+ * Throws `ListingError` on a bad price/currency or an unknown seller/marketplace.
+ */
 export async function createListing(input: CreateListingInput, db?: Db): Promise<Listing> {
-  if (!Number.isInteger(input.priceCents) || input.priceCents <= 0) {
-    throw new Error("priceCents must be a positive integer");
+  if (!Number.isInteger(input.priceCents) || input.priceCents <= 0 || input.priceCents > MAX_PRICE_CENTS) {
+    throw new ListingError("INVALID_PRICE", `priceCents must be a positive integer <= ${MAX_PRICE_CENTS}`);
+  }
+  if (input.currency !== undefined && !/^[A-Za-z]{3}$/.test(input.currency)) {
+    throw new ListingError("INVALID_CURRENCY", "currency must be a 3-letter code");
   }
   const conn = db ?? (await getDb());
+  const [[seller], [marketplace]] = await Promise.all([
+    conn.select({ id: users.id }).from(users).where(eq(users.id, input.sellerId)).limit(1),
+    conn
+      .select({ id: marketplaces.id })
+      .from(marketplaces)
+      .where(eq(marketplaces.id, input.marketplaceId))
+      .limit(1),
+  ]);
+  if (!seller) throw new ListingError("SELLER_NOT_FOUND", `Seller ${input.sellerId} not found`);
+  if (!marketplace) {
+    throw new ListingError("MARKETPLACE_NOT_FOUND", `Marketplace ${input.marketplaceId} not found`);
+  }
   const id = await nextListingId(conn);
   const [row] = await conn
     .insert(listings)
@@ -42,7 +77,7 @@ export async function createListing(input: CreateListingInput, db?: Db): Promise
       title: input.title,
       description: input.description ?? null,
       priceCents: input.priceCents,
-      currency: input.currency ?? "USD",
+      currency: input.currency?.toUpperCase() ?? "USD",
       location: input.location ?? null,
       visibility: input.visibility ?? "cross_market",
     })

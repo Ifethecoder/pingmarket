@@ -1,8 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { createListingRequestSchema, marketplaceIdSchema } from "@/lib/contracts";
-import { internalError, parseJsonBody, validationError } from "@/lib/http";
-import { createListing, listListings } from "@/lib/listings/service";
+import { internalError, jsonError, parseJsonBody, validationError } from "@/lib/http";
+import { createListing, ListingError, listListings, type ListingErrorCode } from "@/lib/listings/service";
 import type { ListingStatus } from "@/lib/types";
 
 const LISTING_STATUSES = ["available", "reserved", "sold", "removed"] as const satisfies readonly ListingStatus[];
@@ -12,6 +12,13 @@ const listQuerySchema = z.object({
   status: z.enum(LISTING_STATUSES).optional(),
   sellerId: z.string().trim().min(1).max(80).optional(),
 });
+
+const LISTING_ERROR_STATUS: Record<ListingErrorCode, number> = {
+  SELLER_NOT_FOUND: 404,
+  MARKETPLACE_NOT_FOUND: 404,
+  INVALID_PRICE: 400,
+  INVALID_CURRENCY: 400,
+};
 
 /** GET /api/listings?marketplaceId&status&sellerId — newest first. */
 export async function GET(req: NextRequest) {
@@ -36,6 +43,9 @@ export async function POST(req: Request) {
   try {
     return NextResponse.json({ listing: await createListing(parsed.data) }, { status: 201 });
   } catch (err) {
+    if (err instanceof ListingError) {
+      return jsonError(LISTING_ERROR_STATUS[err.code], err.message, { code: err.code });
+    }
     return internalError("POST /api/listings", err);
   }
 }

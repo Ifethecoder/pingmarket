@@ -14,11 +14,31 @@ describe("parseMaxPriceCents", () => {
     ["sofa less than $1,200", 120000],
     ["print under $49.50", 4950],
     ["$100 Berkeley", 10000],
+    ["desk under 150 in Berkeley", 15000],
+    ["chair under 2 dollars", 200],
+    ["table under $2 feet", 200], // "$" always means money
+    ["desk $150-$200", 20000],
+    ["desk under 150-200", 20000],
+    ["desk under $150 - 200", 20000],
+    ["lamp $50–$80 in Oakland", 8000],
   ])("%s -> %d cents", (q, cents) => {
     expect(parseMaxPriceCents(q)).toBe(cents);
   });
 
-  it.each(["art print 24x36", "24x36 max", "desk", "2 drawers", "under 150k"])(
+  it.each([
+    "art print 24x36",
+    "24x36 max",
+    "desk",
+    "2 drawers",
+    "under 150k",
+    "shelf under 2 feet",
+    "desk under 3 ft wide",
+    "monitor under 30 in",
+    "planter under 30 in wide",
+    "table for up to 6 people",
+    "rental under 3 days",
+    "rug under 2 m",
+  ])(
     "%s -> null (no price cue)",
     (q) => {
       expect(parseMaxPriceCents(q)).toBeNull();
@@ -33,13 +53,20 @@ describe("parseLocation", () => {
     ["chair near Oakland", "Oakland"],
     ["poster around san francisco", "San Francisco"],
     ["poster in SF", "San Francisco"],
-    ["lamp near Palo Alto", "Palo Alto"],
     ["$100 Berkeley", "Berkeley"],
+    ["chair Oakland pickup", "Oakland"],
   ])("%s -> %s", (q, loc) => {
     expect(parseLocation(q)).toBe(loc);
   });
 
-  it.each(["interested in custom wall art", "desk", "in the den"])("%s -> null", (q) => {
+  it.each([
+    "interested in custom wall art",
+    "desk",
+    "in the den",
+    "lamp near Palo Alto", // unknown places are not guessed
+    "Oak desk in Excellent condition",
+    "chair in Great Shape",
+  ])("%s -> null", (q) => {
     expect(parseLocation(q)).toBeNull();
   });
 });
@@ -72,8 +99,17 @@ describe("parseBuyerQuery", () => {
     });
   });
 
+  it("keeps capitalized non-location words as search tokens", () => {
+    expect(parseBuyerQuery("Oak desk in Excellent condition")).toEqual({
+      tokens: ["oak", "desk", "excellent", "condition"],
+      maxPriceCents: null,
+      location: null,
+    });
+  });
+
   it("exports the stopword list", () => {
     expect(STOPWORDS.has("looking")).toBe(true);
     expect(STOPWORDS.has("desk")).toBe(false);
+    for (const w of ["market", "at", "from", "any", "anything"]) expect(STOPWORDS.has(w)).toBe(true);
   });
 });

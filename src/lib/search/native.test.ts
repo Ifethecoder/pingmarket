@@ -57,6 +57,21 @@ describe("searchNative", () => {
     expect(fromCreative.find((r) => r.id === "D8")?.crossMarket).toBe(false);
   });
 
+  it("without a marketplaceId only cross_market listings are visible", async () => {
+    expect(ids(await searchNative({ query: "bookshelf" }, db))).not.toContain("D4");
+    expect(ids(await searchNative({ query: "bookshelf", marketplaceId: "furniture" }, db))).toContain("D4");
+  });
+
+  it("marketplace hits match the category, not the generic marketplace name", async () => {
+    const results = await searchNative({ query: "furniture", marketplaceId: "creative" }, db);
+    expect(results.length).toBeGreaterThan(0);
+    expect(results.every((r) => r.marketplaceId === "furniture")).toBe(true);
+    expect(results[0].matchReasons).toContain('Marketplace matches "furniture"');
+    // "market" is a stopword and "Market" in the name never scores.
+    const all = await searchNative({ query: "lamp market", marketplaceId: "creative" }, db);
+    expect(ids(all)).toEqual(["D5"]);
+  });
+
   it("explicit request filters override parsed ones", async () => {
     const results = await searchNative(
       { query: "desk", marketplaceId: "furniture", maxPriceCents: 30000, location: "Berkeley" },

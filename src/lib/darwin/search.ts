@@ -3,7 +3,7 @@
  * Never throws: failures become a `status: "error"` outcome with no capabilities.
  */
 import type { DarwinCapabilityResult, DarwinSearchOutcome } from "../types";
-import { darwinSearchRaw, type DarwinContextItem, type DarwinRawSearchResponse } from "./client";
+import { DarwinError, darwinSearchRaw, type DarwinContextItem, type DarwinRawSearchResponse } from "./client";
 import { darwinErrorOutcome, normalizeDarwinResponse } from "./normalize";
 
 export interface DarwinDiscoveryOptions {
@@ -61,6 +61,12 @@ export async function runDarwinDiscovery(
     const { outcome, capabilities } = normalizeDarwinResponse(raw, Date.now() - started);
     return { outcome, capabilities, raw };
   } catch (err) {
+    // Server-side breadcrumb only: never log the request body or any token.
+    console.warn("[darwin] search failed", {
+      code: err instanceof DarwinError ? err.code : undefined,
+      status: err instanceof DarwinError ? err.status : undefined,
+      message: err instanceof Error ? err.message : String(err),
+    });
     return { outcome: darwinErrorOutcome(err, Date.now() - started), capabilities: [] };
   }
 }

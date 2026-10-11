@@ -32,7 +32,7 @@ export async function GET(req: NextRequest) {
 }
 
 /**
- * POST /api/offers — creates an `open` buyer offer. counter/accept/decline live under
+ * POST /api/offers — creates an `open` offer as the simulated web buyer (`u_web_buyer`, `web_simulated`). counter/accept/decline live under
  * /api/offers/{id}/… and are owned by Developer A.
  */
 export async function POST(req: Request) {
@@ -41,7 +41,9 @@ export async function POST(req: Request) {
   const parsed = createOfferRequestSchema.safeParse(parsedBody.body);
   if (!parsed.success) return validationError(parsed.error);
   try {
-    return NextResponse.json({ offer: await createOffer(parsed.data) }, { status: 201 });
+    // Always the simulated web buyer: HTTP callers can never pick buyerId/source.
+    const { listingId, priceCents } = parsed.data;
+    return NextResponse.json({ offer: await createOffer({ listingId, priceCents }) }, { status: 201 });
   } catch (err) {
     if (err instanceof OfferError) {
       return jsonError(OFFER_ERROR_STATUS[err.code], err.message, { code: err.code });

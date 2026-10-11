@@ -26,6 +26,7 @@ describe("listTraceEvents", () => {
   it("formats helpers", () => {
     expect(maskPhone("+1 (555) 000-0002")).toBe("…0002");
     expect(formatMoney(120000)).toBe("$1,200.00");
+    expect(formatMoney(1250, "12$")).toBe("$12.50"); // invalid currency falls back instead of throwing
   });
 
   it("unions messages, listings, searches and offers newest first", async () => {

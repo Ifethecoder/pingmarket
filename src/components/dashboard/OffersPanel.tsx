@@ -109,16 +109,20 @@ function OfferRow({ offer, fresh, onChanged }: { offer: Offer; fresh: boolean; o
       {offer.status === "countered" && (
         <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-2.5 py-1.5">
           <p className="text-xs font-semibold">Seller countered: {price}</p>
-          <button
-            type="button"
-            onClick={() => void accept()}
-            disabled={accepting}
-            className={`${buttonClass.native} ml-auto py-1`}
-            aria-label={`Accept counteroffer of ${price} on offer ${offer.id}`}
-          >
-            {accepting && <Spinner />}
-            Accept {price}
-          </button>
+          {offer.source === "web_simulated" ? (
+            <button
+              type="button"
+              onClick={() => void accept()}
+              disabled={accepting}
+              className={`${buttonClass.native} ml-auto py-1`}
+              aria-label={`Accept counteroffer of ${price} on offer ${offer.id}`}
+            >
+              {accepting && <Spinner />}
+              Accept {price}
+            </button>
+          ) : (
+            <p className="ml-auto text-xs text-muted">Awaiting the SMS buyer</p>
+          )}
           {error && (
             <p role="alert" className="basis-full font-mono text-[11px] text-danger">
               Accept failed: {error}

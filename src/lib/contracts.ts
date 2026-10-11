@@ -5,12 +5,16 @@
 import { z } from "zod";
 import { MARKETPLACE_IDS } from "./types";
 
+/** Upper bound for integer cents columns (Postgres `integer`). */
+export const MAX_PRICE_CENTS = 2_147_483_647;
+
 export const marketplaceIdSchema = z.enum(MARKETPLACE_IDS);
 
 export const positiveCentsSchema = z
   .number()
   .int("price must be integer cents")
-  .positive("price must be positive");
+  .positive("price must be positive")
+  .max(MAX_PRICE_CENTS, "price is too large");
 
 export const searchRequestSchema = z
   .object({
@@ -23,12 +27,14 @@ export const searchRequestSchema = z
   .strict();
 export type SearchRequestInput = z.input<typeof searchRequestSchema>;
 
+/**
+ * HTTP callers are always the simulated web buyer: `buyerId` / `source` are rejected here and only
+ * settable by in-process callers (Developer A's SMS router) via `createOffer`.
+ */
 export const createOfferRequestSchema = z
   .object({
     listingId: z.string().trim().min(1).max(40),
     priceCents: positiveCentsSchema,
-    buyerId: z.string().trim().min(1).max(80).optional(),
-    source: z.enum(["sms", "web_simulated"]).optional(),
   })
   .strict();
 
@@ -39,7 +45,11 @@ export const createListingRequestSchema = z
     title: z.string().trim().min(1).max(200),
     description: z.string().trim().max(2000).nullable().optional(),
     priceCents: positiveCentsSchema,
-    currency: z.string().length(3).toUpperCase().optional(),
+    currency: z
+      .string()
+      .regex(/^[A-Za-z]{3}$/, "currency must be a 3-letter code")
+      .toUpperCase()
+      .optional(),
     location: z.string().trim().max(200).nullable().optional(),
     visibility: z.enum(["cross_market", "marketplace_only"]).optional(),
   })

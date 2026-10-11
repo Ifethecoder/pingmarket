@@ -4,6 +4,15 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 import { MIGRATIONS_FOLDER } from "../src/lib/db";
 
+// Load .env.local / .env like Next does (Node >= 21 API; ignored when missing).
+for (const file of [".env.local", ".env"]) {
+  try {
+    if (typeof process.loadEnvFile === "function") process.loadEnvFile(file);
+  } catch {
+    // file not present
+  }
+}
+
 async function main() {
   const url = process.env.DATABASE_URL;
   if (!url) {

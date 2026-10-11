@@ -70,7 +70,7 @@ function NativeCard({
     setError(null);
     try {
       const { offer } = await postOffer({ listingId: result.id, priceCents });
-      toast("success", `Offer ${offer.id} sent to seller by SMS`);
+      toast("success", `Offer ${offer.id} created as simulated web buyer`);
       onOfferSent();
     } catch (err) {
       const msg = errorMessage(err);

@@ -1,7 +1,8 @@
 /**
  * Native PingMarket listing search (PM-05). Deterministic scoring, no LLM.
  * Candidate set: available listings visible from the buyer's marketplace
- * (own marketplace + `cross_market` listings from other marketplaces).
+ * (own marketplace + `cross_market` listings from other marketplaces). With no marketplace,
+ * only `cross_market` listings are visible.
  */
 import { and, eq, or } from "drizzle-orm";
 import { getDb, type Db } from "../db";
@@ -41,7 +42,7 @@ export async function searchNative(req: SearchRequest, db?: Db): Promise<NativeL
 
   const visibility = req.marketplaceId
     ? or(eq(listings.marketplaceId, req.marketplaceId), eq(listings.visibility, "cross_market"))
-    : undefined;
+    : eq(listings.visibility, "cross_market");
   const [rows, markets] = await Promise.all([
     conn.select().from(listings).where(and(eq(listings.status, "available"), visibility)),
     conn.select().from(marketplaces),
@@ -67,7 +68,8 @@ export async function searchNative(req: SearchRequest, db?: Db): Promise<NativeL
         textScore += DESCRIPTION_WEIGHT;
         if (!inTitle) reasons.push(`Description mentions "${token}"`);
       }
-      if (market && (containsToken(market.category, token) || containsToken(market.name, token))) {
+      // Category only: every marketplace name ends in "Market", which would match everything.
+      if (market && containsToken(market.category, token)) {
         textScore += MARKETPLACE_WEIGHT;
         reasons.push(`Marketplace matches "${token}"`);
       }

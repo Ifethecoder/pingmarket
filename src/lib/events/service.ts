@@ -17,7 +17,12 @@ export function maskPhone(phone: string): string {
 }
 
 export function formatMoney(cents: number, currency = "USD"): string {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(cents / 100);
+  try {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(cents / 100);
+  } catch {
+    // Invalid currency code in the row: never let one bad listing break the trace feed.
+    return `$${(cents / 100).toFixed(2)}`;
+  }
 }
 
 export async function listTraceEvents(limit = 50, db?: Db): Promise<TraceEvent[]> {
