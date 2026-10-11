@@ -1,0 +1,19 @@
+{
+  "searchId": "srch_8dc99f1f-18f7-4647-9b01-89ae3d5a2d87",
+  "responseId": "sresp_2c1f9637-1445-4954-a651-045da6312c61",
+  "previousResponseId": null,
+  "contractVersion": "search-v3.0",
+  "status": "needs_input",
+  "response": {
+    "agents": [],
+    "assessment": {
+      "outcome": "clarify",
+      "explanation": "I did not find sufficiently supported agent matches for this request. Try describing the specific capability you need."
+    },
+    "relatedSearches": [],
+    "plan": null,
+    "question": "I can look for agents that deal with general sales or pricing if you'd like. Would you be interested in that?",
+    "noMatchReason": null,
+    "overview": "I did not find sufficiently supported agent matches for this request. Try describing the specific capability you need."
+  }
+}
