@@ -1,0 +1,27 @@
+# Dial connectivity test
+
+This is Developer A's standalone connectivity test, not the marketplace application. It receives signed Dial webhooks, records them in a local SQLite journal, and replies to `PING`. Other SMS is recorded without a reply. No listing, search, or offer actions run here.
+
+The journal is `.local/dial/connectivity.sqlite`, excluded from Git. Messages are durable on this machine, not shared with B's database. Do not use this local test server as a production deployment. Node 22.13+ is required; its built-in SQLite emits an experimental-feature warning on the current Node version.
+
+Live verification completed October 11, 2026: the signed webhook ping returned 200, and Dial recorded both the test PING and reply as delivered, with matching inbound records. Local evidence is in `.local/dial/test-evidence.json`. The receiver and temporary tunnel were left running after the test; the URL remains valid only while that tunnel process is alive. Registration metadata is in `.local/dial/webhook-registration.json`; the signing secret is in `.env.local`.
+
+1. **Configure the local file.** `.env.local` was created from `.env.example` with owner-only permissions. Populate `DIAL_API_KEY` first; keep credentials in that file, not chat. Run `npm run dial:numbers` for a read-only list of account phone numbers and IDs. Set Number A as `DIAL_SERVICE_NUMBER`/`DIAL_SERVICE_NUMBER_ID`, and the consenting Number B as `DIAL_PARTICIPANT_NUMBER`/`DIAL_PARTICIPANT_NUMBER_ID`. If B is on another account, set `DIAL_PARTICIPANT_API_KEY` and use `npm run dial:numbers -- --participant` to list that account. No number purchase or messaging occurs during these lookups.
+
+2. **Verify account configuration.** Run `npm run dial:doctor -- --online`. This checks that A's ID and phone belong to the configured API key. The webhook secret can remain blank for this step. Keep `DIAL_SEND_ENABLED=false` until ready to test actual messages.
+
+3. **Start the local receiver.** Run `npm run dial:serve`. It listens on `127.0.0.1:8787` by default. `/health` is available; `/api/dial/webhook` returns 503 until a signing secret is configured. Only these routes are exposed, with no local files, credentials, or message journal served over HTTP.
+
+4. **Expose it over HTTPS.** On this checkout, a verified Cloudflare binary is installed at `.local/bin/cloudflared`. Run `.local/bin/cloudflared tunnel --url http://127.0.0.1:8787 --no-autoupdate` in another terminal. It prints a temporary HTTPS URL. Keep both processes running. Fresh checkouts need their own `cloudflared` installation. A development tunnel or B's agreed public deployment is required; localhost alone cannot receive Dial callbacks. See [Cloudflare Quick Tunnels](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/).
+
+5. **Register the Dial webhook.** In Dial's Webhooks dashboard, create a subscription targeting `https://YOUR-TUNNEL/api/dial/webhook` for `message.received`. Save its signing secret as `DIAL_WEBHOOK_SECRET` in `.env.local`, then restart the local receiver. In this live setup, the creation API returned only `secretMasked`; the actual secret was retrieved using authenticated `GET /api/v1/webhooks/{id}/secret` and written locally without displaying it. Use Dial's Fire ping control: the receiver should return HTTP 200 (the API request to schedule a ping can itself return 202). If setup emits a callback before the secret is saved, that request will fail safely and can be retried after restart. See [Dial webhooks](https://docs.getdial.ai/documentation/platform/webhooks).
+
+6. **Send the explicit test.** Set `DIAL_SEND_ENABLED=true` and restart the receiver. Run `npm run dial:send-test` once. It verifies B's number against its account and sends `PING` from B to A. The receiver should record the webhook and send `PingMarket connection test: received your PING.` from A back to B. The script sends a real message; do not repeatedly run it after an ambiguous error. Check Dial message history first.
+
+7. **Confirm evidence.** Look for the received PING and returned confirmation in Dial's message history, plus HTTP 200 and an `accepted` reply attempt in the local server output. Provider acceptance alone is not proof of delivery. The journal preserves the provider's `internal`/`external` source without treating a synthetic Dial event as carrier proof. These results prove connectivity only, not marketplace P0 completion.
+
+Changing `.env.local` requires a server restart. With sends disabled, PING replies remain pending; enabling sends later will process them. Do not delete the journal to fix a timeout or replay problem: it carries the deduplication and attempted-send history. `unknown` attempts require manual reconciliation with Dial history and are not automatically retried. A process interrupted during sending leaves an attempt that becomes unknown after five minutes, never a new pending send.
+
+When finished, stop the tunnel and receiver and disable/delete the test webhook subscription in Dial. A restarted Quick Tunnel can have a different URL; update the subscription rather than accumulating duplicate subscriptions. Integrate A's handler with B's durable application adapter before the listing demo.
+
+Local verification: `npm run typecheck:messaging` and `npm run test:messaging`. Tests use fake provider transports, including restart/deduplication checks against temporary SQLite files; they send no SMS.

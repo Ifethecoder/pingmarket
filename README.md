@@ -12,7 +12,7 @@ cp .env.example .env.local   # optional; everything has a working default
 npm run dev                  # http://localhost:3000 → /dashboard
 ```
 
-`DIAL_NUMBER_B` (if set) becomes the phone number of the seeded demo seller `u_seller_demo`; set it before the first seed (or reset the DB) for it to take effect. `npm run db:migrate` / `db:seed` read `.env.local` and `.env` automatically.
+`DIAL_PARTICIPANT_NUMBER` (Dial Number B, see `docs/DIAL_SETUP.md`; legacy `DIAL_NUMBER_B` still honored) if set becomes the phone number of the seeded demo seller `u_seller_demo`; set it before the first seed (or reset the DB) for it to take effect. `npm run db:migrate` / `db:seed` read `.env.local` and `.env` automatically.
 
 With no `DATABASE_URL`, the app uses an embedded Postgres ([PGlite](https://pglite.dev)) stored in `./.pglite`. It is migrated and seeded automatically on first request (2 marketplaces, 4 demo users, listings `D1`–`D8`). Delete `./.pglite` to reset. Embedded PGlite mode needs a writable working directory and the `drizzle/` folder at runtime, so it is for local/demo use; set `DATABASE_URL` for serverless/production deploys.
 
@@ -57,7 +57,7 @@ drizzle/                    generated SQL migrations
 - **Create an offer from `OFFER D42 100`:** call `createOffer({ listingId, priceCents, buyerId: <mapped SMS user id>, source: "sms" })`. Dedupe webhook retries on `messages.dial_event_id` (unique) before calling it. `OfferError.code` tells you why it was rejected.
 - **Negotiation transitions** (`counter` / `accept` / `decline`, `src/lib/negotiation/service.ts`, `/api/offers/{id}/{counter|accept|decline}`) are **yours**. The dashboard already calls `POST /api/offers/{id}/accept` for the buyer-accepts-counter step and shows the countered price from `offers.proposed_price_cents` / `status = "countered"`. Reuse `toOffer(row)` from the offers service for responses.
 - **SMS trace:** insert into `messages` (`id`, `dial_event_id`, `from_number`, `to_number`, `body`, `direction`). The dashboard event feed reads this table and masks numbers to the last 4 digits.
-- Seeded users: `u_seller_demo` (phone = `DIAL_NUMBER_B`), `u_seller_2`, `u_web_buyer` (dashboard's simulated buyer), `u_operator`.
+- Seeded users: `u_seller_demo` (phone = `DIAL_PARTICIPANT_NUMBER`), `u_seller_2`, `u_web_buyer` (dashboard's simulated buyer), `u_operator`.
 
 ## Darwin Search notes
 

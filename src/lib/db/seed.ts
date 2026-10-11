@@ -105,7 +105,7 @@ export async function seed(db: Db): Promise<void> {
     .values([
       {
         id: "u_seller_demo",
-        phone: process.env.DIAL_NUMBER_B ?? "+15550000002",
+        phone: process.env.DIAL_PARTICIPANT_NUMBER ?? process.env.DIAL_NUMBER_B ?? "+15550000002",
         role: "seller",
         consentStatus: "opted_in",
       },

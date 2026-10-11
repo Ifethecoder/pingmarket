@@ -8,14 +8,21 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "next typegen && tsc --noEmit",
+    "typecheck:messaging": "tsc -p tsconfig.messaging.json",
     "test": "vitest run",
+    "test:messaging": "node --import tsx --test tests/messaging/*.test.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/db-migrate.ts",
     "db:seed": "tsx scripts/db-seed.ts",
-    "darwin:probe": "tsx scripts/darwin-probe.ts"
+    "darwin:probe": "tsx scripts/darwin-probe.ts",
+    "dial:doctor": "node --env-file=.env.local --import tsx scripts/dial/doctor.ts",
+    "dial:numbers": "node --env-file=.env.local --import tsx scripts/dial/doctor.ts --numbers",
+    "dial:serve": "node --env-file=.env.local --import tsx scripts/dial/server.ts",
+    "dial:send-test": "node --env-file=.env.local --import tsx scripts/dial/send-test.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
+    "@getdial/sdk": "^0.41.1",
     "drizzle-orm": "^0.45.4",
     "next": "16.4.0",
     "postgres": "^3.4.9",
