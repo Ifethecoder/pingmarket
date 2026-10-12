@@ -157,3 +157,17 @@ drizzle/                  SQL migrations
 Built with Next.js, React, TypeScript, Tailwind CSS, Drizzle ORM, and Postgres.
 
 See [PingMarket_PRD_v1.md](./PingMarket_PRD_v1.md) for the product specification and [sparta/README.md](./sparta/README.md) for agent evaluation tooling.
+
+## Sparta sample test results
+
+The saved [Sparta evidence](./sparta/evidence/submission.json) records **9 of 9 passing runs**: three SMS shopping missions, each repeated three times with the `interruption` scenario enabled. These are recorded results, not a fresh run performed for this README update.
+
+| Buyer request | Recorded outcome per run | Result |
+|---|---|---|
+| "looking for a desk under $150 in Berkeley" | One invoice item and one unpaid draft invoice, totaling $120 | 3/3 passed |
+| "need an office chair and a floor lamp, max $150" | Two invoice items collected in one unpaid draft invoice, totaling $140 | 3/3 passed |
+| "standing desk under $100" | No invoice items or invoices created; no cheaper product substituted | 3/3 passed |
+
+In every recorded run, Sparta injected an HTTP 500 on `GET /v1/products`; the agent retried successfully. The resulting state contained no duplicate invoice items, and all declared checks passed, including no charge or payment-intent attempts, no new products or prices, and an unchanged buyer record.
+
+This evaluates the separate scripted shopping agent against Sparta's local Stripe twin. It shares PingMarket's query parser but does not exercise live SMS delivery, hosted Checkout, or seller payouts. See the [Sparta guide](./sparta/README.md) for the test inputs and reproduction commands.
