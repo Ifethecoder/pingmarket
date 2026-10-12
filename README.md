@@ -1,171 +1,159 @@
 # PingMarket
 
-SMS-first marketplace aggregation network. Buyers text (or use the demo dashboard) to find native listings across marketplaces plus external agent capabilities discovered via **Darwin Search**; sellers list and negotiate over **Dial** SMS.
+PingMarket is an SMS-first marketplace that connects buyers, sellers, and external shopping agents in one flow. Buyers find items across marketplaces, negotiate prices, and complete checkout. Sellers publish listings, respond to offers, and receive sale notifications. The dashboard brings listings, conversations, orders, and activity together.
 
-See [PingMarket_PRD_v1.md](./PingMarket_PRD_v1.md) for the full product spec, work split, and demo script.
+## How it works
+
+1. **Find an item.** Search by item, budget, and location from the dashboard or by text. PingMarket combines marketplace listings with external agent discovery through Darwin Search.
+2. **Get the details.** Open a listing or request an agent's details, refine your search, and contact discovered agents through Darwin Act.
+3. **Agree on a price.** Send an offer, counter, accept, or decline. Accepted offers reserve the listing and create an order at the agreed price.
+4. **Complete checkout.** Buy an available item at its asking price or pay for an accepted offer through hosted Stripe Checkout.
+5. **Track the sale.** PingMarket verifies payment with Stripe, marks the order paid and the listing sold, and sends purchase notifications. Stripe Connect handles seller transfers.
+
+## Connected integrations
+
+| Integration | What it powers |
+|---|---|
+| **Dial** | Inbound SMS, command replies, and buyer offer updates |
+| **Darwin Search** | External agent discovery, search refinement, and related searches |
+| **Darwin Act** | Conversations with agents discovered in search |
+| **Stripe Checkout** | Hosted payment pages and server-verified payment confirmation |
+| **Stripe Connect** | Seller accounts and order-linked transfers |
+| **Keewano** | Marketplace activity analytics and demand-aware negotiation insights |
+| **Postgres / PGlite** | Listings, users, offers, orders, messages, and search history |
+
+The SMS and web interfaces share marketplace services, keeping inventory, negotiation, and order status connected across channels.
 
 ## Quick start
 
 ```bash
 npm install
-cp .env.example .env.local   # optional; everything has a working default
-npm run dev                  # http://localhost:3000 → /dashboard
+cp .env.example .env.local
+npm run dev
 ```
 
-`DIAL_PARTICIPANT_NUMBER` (Dial Number B, see `docs/DIAL_SETUP.md`; legacy `DIAL_NUMBER_B` still honored) is the real **buyer** phone: it becomes the phone of the seeded SMS buyer `u_sms_buyer` (default `+15550000011`). The seed runs on every boot and reconciles existing databases (an older seed gave this number to the seller `u_seller_demo`, which now always has the fake `+15550000002`), so changing the variable takes effect on the next restart. `npm run db:migrate` / `db:seed` read `.env.local` and `.env` automatically.
+Open [localhost:3000/dashboard](http://localhost:3000/dashboard) for the marketplace dashboard or [localhost:3000/sim](http://localhost:3000/sim) for the buyer and seller phone interface.
 
-With no `DATABASE_URL`, the app uses an embedded Postgres ([PGlite](https://pglite.dev)) stored in `./.pglite`. It is migrated and seeded automatically on first request (2 marketplaces, 5 demo users, listings `D1`–`D8`). Delete `./.pglite` to reset. Embedded PGlite mode needs a writable working directory and the `drizzle/` folder at runtime, so it is for local/demo use; set `DATABASE_URL` for serverless/production deploys.
+Add your integration credentials to `.env.local` using the settings below. Keep credentials server-side and out of version control.
 
-To use Supabase/Postgres instead:
+### Database
+
+PingMarket uses embedded Postgres through PGlite when `DATABASE_URL` is unset. Data is persisted in `./.pglite`, and migrations and initial listings are loaded automatically on the first request.
+
+For a shared Postgres or Supabase database, set `DATABASE_URL` in `.env.local`, then run:
 
 ```bash
-export DATABASE_URL=postgres://...
-npm run db:migrate && npm run db:seed
+npm run db:migrate
+npm run db:seed
 ```
 
-## Scripts
+Use `DATABASE_URL` for serverless deployments. Embedded storage requires a writable working directory and the `drizzle/` directory at runtime.
+
+### Integration configuration
+
+| Settings | Purpose |
+|---|---|
+| `DIAL_API_KEY`, `DIAL_SERVICE_NUMBER`, `DIAL_SERVICE_NUMBER_ID` | Connect the PingMarket SMS service number |
+| `DIAL_PARTICIPANT_NUMBER` | Register the SMS buyer's phone number |
+| `DIAL_WEBHOOK_SECRET`, `DIAL_SEND_ENABLED=true` | Verify inbound events and enable outgoing SMS |
+| `DARWIN_API_KEY` | Authenticate Darwin Search and enable Act with Search + Act scopes |
+| `STRIPE_SECRET_KEY` | Connect hosted Checkout and payment verification; supported key configuration is documented in the Stripe setup guide |
+| `APP_URL` | Set the public origin for checkout return URLs and SMS payment links; required in production |
+| `STRIPE_WEBHOOK_SECRET` | Verify Stripe webhook events |
+| `PLATFORM_FEE_BPS` | Set the platform's share of the settled net amount for seller transfers |
+| `KEEWANO_API_KEY` | Send marketplace activity to Keewano |
+| `KEEWANO_PAT`, `KEEWANO_USER_EMAIL`, `KEEWANO_PROJECT_ID` | Connect live analytics queries for negotiation insights |
+
+Detailed setup guides: [Dial](./docs/DIAL_SETUP.md), [Stripe](./docs/STRIPE_SETUP.md), and [Keewano](./docs/KEEWANO_SETUP.md).
+
+## Marketplace dashboard
+
+The dashboard connects the buyer journey and seller workflow:
+
+- Search marketplace listings and discover external agents.
+- Refine Darwin searches and send messages to discovered agents.
+- Review listings, submit offers, and manage counters, accepts, and declines.
+- Open Stripe Checkout for orders and confirm payment status.
+- Track seller transfers and view negotiation insights.
+- Follow marketplace activity through the event feed.
+
+## Buyer and seller phone interface
+
+The phone interface at `/sim` connects buyer and seller conversations to the same listings, search, negotiation, and payment services used by the dashboard and SMS gateway.
+
+Sellers publish listings and respond to offers. Buyers search, request details, negotiate, and use **Buy** to open Stripe Checkout. Buying an available item reserves it at the asking price; buying through an accepted offer preserves the agreed price. Repeated checkout requests reuse the order and open session.
+
+After checkout, the server retrieves payment status from Stripe before recording the sale. The seller receives a **Sold!** message, and the buyer receives a receipt. **Check payment** confirms the order when the return from Checkout is interrupted. Canceled checkout retains the buyer's reservation so payment can resume.
+
+## SMS commands
+
+The registered buyer texts `DIAL_SERVICE_NUMBER` from `DIAL_PARTICIPANT_NUMBER`.
+
+| Command | Result |
+|---|---|
+| `SEARCH office chair under $100` | Find marketplace listings and external agents |
+| `DETAILS D2` | Get listing details |
+| `OFFER D2 80` | Offer $80 for listing D2 |
+| `ACCEPT O7` | Accept a seller counter, reserve the listing, and receive order details and a checkout link |
+| `DECLINE O7` | Decline a seller counter |
+| `AGENT 1` | Get details for an agent from the latest search |
+| `HELP` | View available commands |
+| `STOP` | Stop offer-update messages |
+
+Seller channels also support `SELL`, `COUNTER`, `ACCEPT`, and `DECLINE`. The registered Dial participant is assigned the buyer role. Changing `DIAL_PARTICIPANT_NUMBER` updates that buyer's identity on the next restart.
+
+Dial sends inbound events to `/api/dial/webhook`. PingMarket verifies signatures, stores messages, deduplicates event retries, and processes messages from each phone in arrival order. Seller responses trigger buyer updates through Dial.
+
+## Payments and order tracking
+
+Stripe Checkout collects payment details on Stripe's hosted page. PingMarket confirms the Checkout Session with Stripe on return, on demand, or through a signed webhook. It checks the order, amount, currency, and payment status before marking an order paid and its listing sold in one transaction.
+
+Order creation, payment confirmation, and seller transfers use idempotent operations. A checkout link or return URL alone does not record a payment. Seller transfers are linked to the order's charge and account for Stripe fees and the configured platform fee.
+
+See the [Stripe setup guide](./docs/STRIPE_SETUP.md) for account configuration, supported credentials, webhook forwarding, and seller provisioning.
+
+## Development commands
 
 | Command | Purpose |
 |---|---|
-| `npm run dev` / `build` / `start` | Next.js app |
-| `npm test` | Vitest suite (DB in-memory PGlite, Darwin adapter with recorded fixtures, search ranking) |
-| `npm run typecheck` / `npm run lint` | TypeScript / ESLint |
-| `npm run darwin:probe -- "query"` | Live Darwin Search call, prints normalized capabilities |
-| `npm run darwin:acceptance` | Live end-to-end Darwin checks against a running `npm run dev` (PM-06/PM-07, Journey B, follow-ups) |
-| `npm run db:generate` | Regenerate SQL migrations from `src/lib/db/schema.ts` |
-| `npm run db:migrate` / `db:seed` | Apply migrations / seed an external Postgres |
-| `npm run stripe:listen` | Forward Stripe test webhooks to `localhost:3000/api/stripe/webhook` (needs the Stripe CLI) |
-| `npm run stripe:sellers` | Create/reuse Stripe Connect test accounts for sellers (`-- --payout-pending` also retries seller payouts); stop `npm run dev` first or use `POST /api/stripe/sellers` |
-| `npm run keewano:check` / `keewano:backfill` | Verify Keewano ingest + live SQL / seed synthetic negotiation history (see `docs/KEEWANO_SETUP.md`) |
-| `npm run sparta:open` / `sparta:run` / `sparta:evidence` | Test the SMS checkout agent against a [Sparta Worlds](https://www.usesparta.co) Stripe twin (Node 24+); see [sparta/README.md](./sparta/README.md) |
+| `npm run dev` | Start the development server |
+| `npm run build` / `npm run start` | Build and run the Next.js application |
+| `npm test` | Run the Vitest suite |
+| `npm run test:messaging` | Run messaging tests |
+| `npm run typecheck` / `npm run lint` | Check TypeScript and ESLint |
+| `npm run db:generate` | Generate SQL migrations from the Drizzle schema |
+| `npm run db:migrate` / `npm run db:seed` | Apply migrations and load initial data |
+| `npm run dial:doctor` / `npm run dial:numbers` | Check Dial connectivity and phone configuration |
+| `npm run darwin:probe -- "query"` | Query Darwin Search and inspect normalized results |
+| `npm run darwin:acceptance` | Run Darwin integration checks against a running app |
+| `npm run stripe:listen` | Forward Stripe webhooks to the local app using the Stripe CLI |
+| `npm run stripe:sellers` | Provision seller Connect accounts |
+| `npm run keewano:check` | Check Keewano ingestion and live queries |
+| `npm run keewano:backfill` | Populate negotiation analytics history |
 
-## Layout (Developer B modules)
+## Project structure
 
-```
-src/lib/types.ts            FROZEN shared types (Listing, Offer, SearchRequest/Response, DarwinCapabilityResult)
-src/lib/contracts.ts        zod schemas for request bodies
-src/lib/db/                 drizzle schema, dual-driver getDb() (PGlite | postgres-js), seed, id minting
-src/lib/listings/service.ts createListing / listListings / getListing / updateListingStatus
-src/lib/offers/service.ts   createOffer / listOffers / getOffer (+ OfferError)
-src/lib/orders/service.ts   getOrCreateOrderForOffer / listOrders / markOrderPaid (+ OrderError)
-src/lib/payments/stripe.ts  Stripe test-mode Checkout + webhook signature verification (only Stripe code)
-src/lib/darwin/             Darwin Search v3 client, normalization, runDarwinDiscovery()
-src/lib/search/             parseBuyerQuery, searchNative, merge/rank, runSearch orchestrator
-src/lib/events/             trace-event feed for the dashboard
-src/lib/keewano/            Keewano event ingest, live SQL, demand-aware negotiation advice (docs/KEEWANO_SETUP.md)
-src/lib/negotiation/db-service.ts  counter / accept / decline over drizzle (+ NegotiationError)
-src/lib/sms/gateway.ts      shared SMS command router (parseSms → listings/search/offers/negotiation) for every phone
-src/lib/sms/simulator.ts    /sim handsets: gateway + replies stored in `messages` (sim_ ids)
-src/lib/sms/inbox.ts, inbound.ts, outbound.ts, notify.ts   real buyer over Dial: durable inbox, processing, sends, offer updates
-src/lib/dial/runtime.ts     Dial env → { configured, sender } for the Next app
-src/app/api/                search, listings, offers (create/list + {id}/counter|accept|decline), orders, stripe/webhook,
-                            marketplaces, events, sms/simulate, dial/webhook, dial/simulate-inbound (dev only)
-src/app/dashboard/          buyer demo dashboard (client-side, polls the API)
-src/app/sim/                phone-style seller + buyer handsets (client-side, polls /api/sms/simulate)
-drizzle/                    generated SQL migrations
-```
-
-## Simulated phones (`/sim`)
-
-Two phone-style chat UIs, one seller and one buyer, that text PingMarket without Dial. Each text goes through
-`parseSms` (the same grammar the webhook will use) and `src/lib/sms/simulator.ts` routes it into the real
-listings / search / offers services. Replies and cross-handset notifications (an OFFER on the seller's listing
-pings the seller phone) are stored in `messages` with `sim_…` Dial event ids, so the dashboard trace shows them
-labelled `SIM`. Identity is fixed per handset and never inferred from the text:
-
-- seller phone → seeded `u_seller_2` (owns `D2`, `D4`, `D6`, `D8`). The dashboard demo seller `u_seller_demo` is untouched.
-- buyer phone → seeded `u_web_buyer`; offers keep `source: "web_simulated"`.
-
-`ACCEPT` / `COUNTER` / `DECLINE` run the drizzle negotiation service (`src/lib/negotiation/db-service.ts`) by
-default; pass another `NegotiationPort` as `negotiation` to substitute it. When the sim seller moves an offer made
-by the real SMS buyer, that buyer is texted over Dial. The router itself (`src/lib/sms/gateway.ts`) is shared with
-the real phone. Listing drafts awaiting a price/location are kept in memory for 10 minutes.
-
-## Real SMS buyer over Dial
-
-The real phone `DIAL_PARTICIPANT_NUMBER` is the buyer `u_sms_buyer`. It texts the PingMarket service number
-`DIAL_SERVICE_NUMBER`; every inbound and outbound text is a `messages` row (trace label `SMS`, `detail.channel: "dial"`),
-offers it makes have `source: "sms"`, and orders it accepts appear on the dashboard like any other.
-
-What the phone can text:
-
-| Text | Effect |
-|---|---|
-| `SEARCH office chair under $100` | Up to 3 native listings plus Darwin external agents (≤ 480 chars) |
-| `DETAILS D2` | Listing details |
-| `OFFER D2 80` | Opens an offer (`source: "sms"`); the seller answers on the dashboard |
-| `ACCEPT O7` / `DECLINE O7` | Answer a seller counter. ACCEPT reserves the listing, declines competing offers and creates the order; the reply has the order id plus a Stripe test Checkout link when `STRIPE_SECRET_KEY` and `APP_URL` (or `NEXT_PUBLIC_APP_URL`) are set, else "Pay on the PingMarket dashboard." |
-| `AGENT 1` | Details for an external agent from the last search |
-| `HELP` / `STOP` | Commands / stop offer-update texts (texting again opts back in) |
-
-`SELL` is refused: this number is registered as a buyer. Unknown numbers get "This number isn't registered with PingMarket."
-
-Sellers act from the dashboard: `POST /api/offers/{id}/counter { priceCents }`, `/accept`, `/decline` (body `{}`) → `{ offer }`,
-errors `{ error, code }` (`OFFER_NOT_FOUND` 404, `FORBIDDEN` 403, `INVALID_PRICE` 400, `OFFER_CLOSED` / `OFFER_EXPIRED` /
-`LISTING_UNAVAILABLE` 409). These routes require `content-type: application/json` and, when an `Origin` header is sent,
-a same-origin one (403 `FORBIDDEN` otherwise), so a cross-site form can't move offers. A repeated accept returns the
-offer unchanged and texts nobody. The acting party is derived server-side: the seller on an `open` offer, the buyer on a
-`countered` one. A countered `sms` offer can only be answered from the phone (409 `SMS_BUYER_ONLY`). After a seller
-counters, accepts or declines an `sms` offer (or an accept declines a competing `sms` offer), the buyer is texted
-(`Counter O7: $90.00 for D2 (…). Reply ACCEPT O7 or DECLINE O7.` / `Accepted O7 at $90.00 for D2. Order ORD3 is pending payment. …` / `Offer O7 on D2 was declined.`).
-
-Wiring:
-
-1. Fill the Dial block of `.env.local` (see `docs/DIAL_SETUP.md`) and `npm run dev`. `GET /api/dial/webhook` returns
-   `{ configured, webhookReady, sendsEnabled }`. Replies are only sent with `DIAL_SEND_ENABLED=true`, and only ever to
-   `DIAL_PARTICIPANT_NUMBER`; otherwise they are stored but not sent.
-2. Expose the app: `cloudflared tunnel --url http://localhost:3000`.
-3. Point the Dial `message.received` subscription at `https://<tunnel>/api/dial/webhook` and put its signing secret
-   in `DIAL_WEBHOOK_SECRET`; restart `npm run dev`.
-
-The webhook verifies the signature, stores the text (deduplicated on the Dial event id), answers 200 immediately and
-routes/replies in `after()` (route `maxDuration` 60s), so a slow Darwin search never trips Dial's 10s timeout. Texts
-from one phone are processed in arrival order (`SEARCH …` then `AGENT 1`).
-
-Without Dial, exercise the same pipeline locally. `/api/dial/simulate-inbound` answers only direct local calls: 404 in
-production, and 404 unless the `Host` is localhost / 127.0.0.1 / [::1], there is no `cf-connecting-ip` header, any
-`x-forwarded-for` lists only loopback addresses (Next adds one itself for local calls; a tunnel sets the real client IP),
-and the content-type is JSON, so it is unreachable through the tunnel. Its inbound rows have `dev_` event ids and
-are labelled `SIM` in the trace; replies are still sent through Dial when it is configured and the recipient is the
-participant number:
-
-```bash
-curl -s -X POST localhost:3000/api/dial/simulate-inbound -H 'content-type: application/json' \
-  -d '{"from":"+15550000011","body":"SEARCH office chair"}'
+```text
+src/app/dashboard/        Marketplace dashboard
+src/app/sim/              Buyer and seller phone interface
+src/app/api/              Marketplace, messaging, agent, and payment endpoints
+src/components/           Dashboard and phone interface components
+src/lib/db/               Drizzle schema, database drivers, migrations, and seed data
+src/lib/listings/         Listing creation and inventory status
+src/lib/search/           Query parsing, native search, and result ranking
+src/lib/darwin/           Darwin Search and Act clients
+src/lib/offers/            Offer creation and transitions
+src/lib/negotiation/       Counter, accept, and decline workflows
+src/lib/orders/            Order creation and payment state
+src/lib/payments/          Stripe Checkout, confirmation, and seller transfers
+src/lib/sms/               Shared SMS command routing, inbox, replies, and notifications
+src/lib/dial/              Dial connectivity and webhook verification
+src/lib/keewano/           Activity ingestion and negotiation insights
+src/lib/events/            Dashboard activity feed
+scripts/                  Database and integration utilities
+drizzle/                  SQL migrations
 ```
 
-Use the `DIAL_PARTICIPANT_NUMBER` value as `from` when it is set (the default buyer phone is `+15550000011`).
+Built with Next.js, React, TypeScript, Tailwind CSS, Drizzle ORM, and Postgres.
 
-Known limitations:
-
-- **Deduplication is per Dial event id only.** `messages` has no provider message-id column, so a second, different
-  event carrying the same Dial message would be stored and processed again. Dial retries reuse the event id.
-- **No processed marker.** An inbound row is processed once, in `after()`, with no `processed_at` column. If the process
-  dies between storing the text and replying, the text is not retried; the buyer has to send it again.
-
-## Integration points for Developer A (Dial / SMS / negotiation)
-
-- **Create a listing from `SELL`:** call `createListing({ sellerId, marketplaceId, title, priceCents, location, description })` from `src/lib/listings/service.ts`. Ids are minted as `D{n}` (seeded `D1`–`D8`, minted ids start at `D101` and are not contiguous).
-- **Search from `SEARCH`:** call `runSearch(req)` from `src/lib/search/service.ts` (native + Darwin) or `searchNative(req)` for SMS-only replies. Both return the frozen `SearchResponse` / `NativeListingResult[]` shapes.
-- **Create an offer from `OFFER D42 100`:** call `createOffer({ listingId, priceCents, buyerId: <mapped SMS user id>, source: "sms" })`. Dedupe webhook retries on `messages.dial_event_id` (unique) before calling it. `OfferError.code` tells you why it was rejected.
-- **Negotiation transitions** run on `src/lib/negotiation/db-service.ts` (same rules as `src/lib/negotiation/service.ts`, implemented with drizzle transactions) behind `/api/offers/{id}/{counter|accept|decline}` and the SMS `COUNTER` / `ACCEPT` / `DECLINE` commands.
-- **Orders:** when a buyer accepts, call `getOrCreateOrderForOffer(offerId)` from `src/lib/orders/service.ts` (idempotent; `orders.offer_id` is unique). The dashboard's "Pay with Stripe (test)" button calls the same function, so either side may create the order first.
-- **SMS trace:** insert into `messages` (`id`, `dial_event_id`, `from_number`, `to_number`, `body`, `direction`). The dashboard event feed reads this table and masks numbers to the last 4 digits.
-- Seeded users: `u_sms_buyer` (phone = `DIAL_PARTICIPANT_NUMBER`, the real SMS buyer), `u_seller_demo` (`+15550000002`), `u_seller_2`, `u_web_buyer` (dashboard's simulated buyer), `u_operator`.
-
-## Stripe test checkout (PM-11)
-
-One pending order → hosted Stripe **test-mode (sandbox)** Checkout → server verifies the session with Stripe → `paid`. **Only `STRIPE_SECRET_KEY` is required**; the webhook is an optional backstop. Setup and demo steps: [docs/STRIPE_SETUP.md](./docs/STRIPE_SETUP.md).
-
-- Env: `STRIPE_SECRET_KEY` (`sk_test_…` only; live keys are refused); `APP_URL` for the return URLs (optional in dev, required in production); optional `STRIPE_WEBHOOK_SECRET` (`whsec_…`, from `npm run stripe:listen`) for the webhook backstop.
-- API: `GET /api/orders` → `{ orders }`; `POST /api/orders { offerId }` → `{ order }` (201 created / 200 existing, accepted offers only); `POST /api/orders/{id}/checkout` → `{ url, sessionId }` (503 `STRIPE_NOT_CONFIGURED` / `APP_URL_REQUIRED`; 409 `ORDER_NOT_PENDING`, `PAYMENT_PROCESSING`, `LISTING_UNAVAILABLE`; 400 `STRIPE_INVALID_REQUEST`; 502 `STRIPE_ERROR`); `POST /api/orders/{id}/confirm { sessionId? }` → `{ order, confirmed, sessionStatus, paymentStatus }`; optional `POST /api/stripe/webhook`.
-- **An order is marked `paid` only after the server has a Checkout Session from Stripe itself** (retrieved with the secret key on return from Checkout / on demand, or in a signed webhook) that is test mode, for this order, `payment_status = "paid"`, with the order's amount in `usd`. The listing is marked `sold` in the same transaction. Creating the link or the `?checkout=success` URL alone never marks anything paid. Repeats are no-ops. A `failed` order can be retried from the dashboard.
-- **Seller payouts (Stripe Connect, test mode):** every paid order also makes a Connect transfer, funded by the order's own charge (`source_transaction`, `transfer_group` = order id), to the seller's Custom test connected account. It is created automatically in the platform's country (US and JP test data). It is paid in the platform's settlement currency (e.g. JPY) from the net amount after Stripe's fee, minus `PLATFORM_FEE_BPS`, after the response (`after()`), with one transfer per order guaranteed by an atomic claim, a `transfer_group` lookup and an idempotency key. Retry with `POST /api/orders/{id}/payout`; provision accounts with `POST /api/stripe/sellers` or `npm run stripe:sellers` (both routes 403 in production unless `ALLOW_TEST_PAYOUT_ROUTES=true`). Connect must be enabled in the sandbox; until then payouts show `not_configured` and the payment is unaffected. No bank payouts or live settlement.
-- Card details stay on Stripe's hosted page.
-
-## Darwin Search notes
-
-- Endpoint `POST https://api.darwin.so/api/v3/search`, anonymous allowed; set `DARWIN_API_KEY` for the authenticated limit.
-- Results are **capabilities, not inventory or quotes**. The API and dashboard keep them in a separate `externalCapabilities` list and surface `needs_input` questions, `no_match` reasons, readiness, uncertainties and connection methods verbatim. Ids and revisions are copied exactly; the private `searchToken` is never persisted or returned.
-- A transient HTTP 500 from Darwin was observed once during development; the client retries 5xx once.
-- **Follow-ups.** Send `previousResponseId` (the `darwin.responseId` from an earlier `/api/search` response) with a new `query` to continue that Darwin search: answer a `needs_input` question or refine the match. The dashboard shows a follow-up box under the external results, plus Darwin's `relatedSearches` as one-click suggestions. Darwin treats the follow-up text as the *new* task ("latest task wins"), so restate the full request, e.g. `compare prices for a Herman Miller Aeron under $800`, not just `Aeron`. Mechanics: the first response's private `searchToken` is stored in `agent_searches.darwin_search_token` and sent back as `X-Search-Token` (required for anonymous follow-ups; follow-up responses don't issue a new one, so it is carried forward). An unknown `previousResponseId` is a 400 (`UNKNOWN_PREVIOUS_RESPONSE`); a continuation Darwin no longer accepts (400 `SEARCH_RESPONSE_EXPIRED` / 403 `SEARCH_TOKEN_REQUIRED`) becomes `darwin.status: "error"` with a "start a new search" message.
+See [PingMarket_PRD_v1.md](./PingMarket_PRD_v1.md) for the product specification and [sparta/README.md](./sparta/README.md) for agent evaluation tooling.
