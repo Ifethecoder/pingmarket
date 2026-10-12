@@ -24,6 +24,47 @@ PingMarket is an SMS-first marketplace that connects buyers, sellers, and extern
 
 The SMS and web interfaces share marketplace services, keeping inventory, negotiation, and order status connected across channels.
 
+## How we used the sponsor tools
+
+### Darwin
+
+Darwin finds sellers and agents beyond PingMarket's own listings.
+
+- **Darwin Search.** Every search, from the dashboard or by SMS, runs PingMarket listings and Darwin Search side by side. The buyer's budget and location go with the query. Darwin's results are normalized and merged with ours. Follow-up searches pass the previous response ID and search token, so buyers can refine a search and see related searches without starting over.
+- **Darwin Act.** Buyers can "Ask this agent" to message any agent Darwin found. Only agents from a search this server ran and saved can be contacted. PingMarket sends plain text only and never answers payment, approval, or login requests. Agent replies are shown as messages, never treated as inventory or a price quote.
+
+### Keewano
+
+KeewanoDB stores marketplace history and powers negotiation advice.
+
+- **Event ingestion.** Searches, listing views, offers, counters, accepts, declines, superseded offers, and paid orders are sent to Keewano as ordered events. Sending is fire-and-forget, so analytics never slow down or break a trade.
+- **Negotiation advice.** When a seller gets an offer, PingMarket queries Keewano with SQL. It asks how many competing offers and views the listing got in the last 24 hours, and which counter prices (as a share of the ask) buyers actually accepted. The answers become one recommendation: ACCEPT, or COUNTER at a suggested price. The seller gets it with the offer SMS and in the seller console.
+- **Closing the loop.** Each recommendation is recorded back into Keewano as a `Negotiation Advice` event, so its effect on closed deals can be measured. The `/live` view shows Keewano project analytics.
+
+### Sparta
+
+Sparta Worlds tests the SMS checkout agent against a local Stripe twin, so tests never touch real Stripe.
+
+- **World.** Built from the Digital Shop template and seeded with PingMarket's demo listings. The seed also includes an inactive price and a recurring price the agent should not choose.
+- **Missions.** Three buyer texts: one item, two items in one message, and a budget too low for any match.
+- **Checks.** Exactly one draft invoice, the expected number of items, no charge or payment-intent attempts, no invented products or prices, and no cheaper substitute when the buyer is over budget.
+- **Result.** 9 of 9 recorded runs passed with the `interruption` scenario. See [Sparta sample test results](#sparta-sample-test-results).
+
+### Dial
+
+The demo uses Dial as a simulated SMS channel. The `/sim` page shows buyer and seller phones that use the same SMS commands (`SEARCH`, `DETAILS`, `OFFER`, `ACCEPT`, `DECLINE`, `BUY`) and the same message pipeline as the Dial webhook. Signature verification, retry deduplication, and per-phone message ordering are already implemented for live Dial traffic. Moving from the simulator to real phones changes only the transport.
+
+Future plans for Dial:
+
+- **Seller phones.** Today only the registered buyer receives texts. Each seller could get a Dial number to list items (`SELL`), counter, and accept by SMS instead of on the dashboard.
+- **Buyer–seller messaging.** After an offer is accepted, Dial relays texts between the buyer and seller through masked numbers, so they can arrange when and where to meet without sharing personal phone numbers. The thread closes a set time after the meetup, and PingMarket can flag scams such as off-platform payment requests. Price changes still go through `OFFER`, `COUNTER`, and `ACCEPT` so the order stays accurate.
+- **Many buyers.** A pool of service numbers, or one per region, so many buyers can text at once from local area codes.
+- **Photos by MMS.** Send listing photos with `DETAILS`, and let sellers create a listing by texting a photo.
+- **Voice negotiation.** Let buyers and sellers call in and negotiate with an agent by phone, using the same Keewano advice.
+- **Reminders.** Text buyers when an accepted offer is still unpaid, when a saved search drops in price, or when a new listing fits their budget.
+- **Delivery receipts and compliance.** Use delivery status to retry failed sends, and handle opt-in and `STOP` rules at scale.
+- **Darwin agents over SMS.** Relay Darwin Act conversations through Dial so buyers can talk to discovered agents by text.
+
 ## Quick start
 
 ```bash
