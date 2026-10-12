@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { Offer, OfferStatus, Order } from "@/lib/types";
+import type { Offer, OfferSource, OfferStatus, Order } from "@/lib/types";
 import type { NegotiationInsight } from "@/lib/keewano/insight";
 import { acceptOffer, ApiError, counterOffer, declineOffer, errorMessage, getOfferInsight, getOffers, getOrders, postCheckout, postConfirm, postOrder, postPayout } from "./api";
 import { formatCents } from "./format";
@@ -19,7 +19,7 @@ const statusTone: Record<OfferStatus, Tone> = {
 
 const versionKey = (o: Offer) => `${o.id}@${o.updatedAt}`;
 
-export function OffersPanel({ refreshToken, onChanged }: { refreshToken: number; onChanged: () => void }) {
+export function OffersPanel({ refreshToken, onChanged, source }: { refreshToken: number; onChanged: () => void; source?: OfferSource }) {
   const seen = useRef<Set<string> | null>(null);
   const [fresh, setFresh] = useState<Set<string>>(() => new Set());
 
@@ -35,7 +35,7 @@ export function OffersPanel({ refreshToken, onChanged }: { refreshToken: number;
       seen.current = new Set(keys);
     },
   });
-  const offers = poll.data?.offers ?? [];
+  const offers = (poll.data?.offers ?? []).filter((offer) => !source || offer.source === source);
   const ordersPoll = usePolling(getOrders, { intervalMs: 4000, refreshToken });
   const orderByOffer = new Map((ordersPoll.data?.orders ?? []).map((o) => [o.offerId, o]));
   // Until the first orders poll lands we cannot tell "unpaid" from "paid": no pay button yet.
@@ -45,7 +45,7 @@ export function OffersPanel({ refreshToken, onChanged }: { refreshToken: number;
     <Panel
       id="offers"
       title="Negotiation"
-      subtitle="Offers & counters · polled every 4s"
+      subtitle={source === "sms" ? "SMS buyer offers & counters · seller actions send real messages" : "Offers & counters · polled every 4s"}
       status={<LiveStatus updatedAt={poll.updatedAt} error={poll.error} loading={poll.loading} />}
     >
       {poll.error && (
@@ -59,7 +59,7 @@ export function OffersPanel({ refreshToken, onChanged }: { refreshToken: number;
         </div>
       )}
       {offers.length === 0 ? (
-        !poll.loading && !poll.error && <EmptyNote>No offers yet. Send one from a native listing result.</EmptyNote>
+        !poll.loading && !poll.error && <EmptyNote>{source === "sms" ? "No SMS offers yet. The buyer can text OFFER <listing ID> <price>." : "No offers yet. Send one from a native listing result."}</EmptyNote>
       ) : (
         <ul className="max-h-[22rem] divide-y divide-border/70 overflow-auto">
           {offers.map((o) => (

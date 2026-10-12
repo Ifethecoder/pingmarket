@@ -17,6 +17,9 @@ export function Header() {
             </div>
           </div>
           <div className="flex items-center gap-4">
+            <Link href="/live" className="rounded-md border border-border bg-surface px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+              Live SMS & analytics →
+            </Link>
             <Link
               href="/sim"
               className="rounded-md border border-border bg-surface px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"

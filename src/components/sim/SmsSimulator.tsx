@@ -6,12 +6,35 @@ import { errorMessage, getMarketplaces, postConfirm } from "../dashboard/api";
 import { EventTracePanel } from "../dashboard/EventTracePanel";
 import { usePolling } from "../dashboard/hooks";
 import { Phone } from "./Phone";
+import { readSimPhotos, SIM_PHOTOS_STORAGE_KEY, type SimPhotos } from "./photos";
 
 export function SmsSimulator() {
   const marketplaces = usePolling(getMarketplaces, { intervalMs: 15000 });
   const [refreshToken, setRefreshToken] = useState(0);
   const bump = useCallback(() => setRefreshToken((n) => n + 1), []);
   const list = marketplaces.data?.marketplaces ?? [];
+  const [photos, setPhotos] = useState<SimPhotos>({});
+
+  useEffect(() => {
+    try {
+      const saved = readSimPhotos(window.sessionStorage.getItem(SIM_PHOTOS_STORAGE_KEY));
+      queueMicrotask(() => setPhotos(saved));
+    } catch {
+      // Photos still work in memory when browser storage is unavailable.
+    }
+  }, []);
+
+  function attachPhoto(listingId: string, photo: string) {
+    setPhotos((current) => {
+      const next = { ...current, [listingId]: photo };
+      try {
+        window.sessionStorage.setItem(SIM_PHOTOS_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // Keep the preview available even if the browser storage quota is full.
+      }
+      return next;
+    });
+  }
 
   return (
     <div className="flex min-h-full flex-1 flex-col">
@@ -25,6 +48,9 @@ export function SmsSimulator() {
               <p className="mt-1 text-[13px] text-muted">Simulated handsets · text the marketplace like a real seller and buyer.</p>
             </div>
             <div className="flex items-center gap-4">
+              <Link href="/live" className="rounded-md border border-border bg-surface px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+                Live SMS & analytics →
+              </Link>
               <Link
                 href="/dashboard"
                 className="rounded-md border border-border bg-surface px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
@@ -40,8 +66,8 @@ export function SmsSimulator() {
       <CheckoutReturnNotice onConfirmed={bump} />
 
       <main className="mx-auto grid w-full max-w-[1600px] flex-1 grid-cols-1 items-start gap-6 px-4 py-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.1fr)]">
-        <Phone actor="seller" marketplaces={list} onActivity={bump} refreshToken={refreshToken} />
-        <Phone actor="buyer" marketplaces={list} onActivity={bump} refreshToken={refreshToken} />
+        <Phone actor="seller" photos={photos} onPhoto={attachPhoto} marketplaces={list} onActivity={bump} refreshToken={refreshToken} />
+        <Phone actor="buyer" photos={photos} onPhoto={attachPhoto} marketplaces={list} onActivity={bump} refreshToken={refreshToken} />
         <div className="min-w-0 lg:sticky lg:top-4">
           <EventTracePanel refreshToken={refreshToken} />
         </div>

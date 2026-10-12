@@ -2,12 +2,15 @@
 
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import type { Marketplace, MarketplaceId, Message } from "@/lib/types";
+import type { LiveMessage } from "@/lib/sms/live";
 import { MARKETPLACE_IDS } from "@/lib/types";
 import { errorMessage, getSimThread, postSimSms, type SimActor } from "../dashboard/api";
+import { apiFetch } from "../dashboard/api";
 import { formatAbsolute } from "../dashboard/format";
 import { usePolling } from "../dashboard/hooks";
 import { ErrorNote, LiveStatus } from "../dashboard/ui";
 import { BuyPanel, BUYER_MARKETPLACE_STORAGE_KEY } from "./BuyPanel";
+import { BUILT_IN_SIM_PHOTO, listedPhotoId, messagePhotoSource, type SimPhotos } from "./photos";
 import "./imessage.css";
 
 const QUICK_REPLIES: Record<SimActor, string[]> = {
@@ -50,17 +53,22 @@ function stampParts(value: string): { day: string; time: string } {
 
 export function Phone({
   actor,
+  photos,
+  onPhoto,
   marketplaces,
   onActivity,
   refreshToken: activityToken,
 }: {
   actor: SimActor;
+  photos: SimPhotos;
+  onPhoto: (listingId: string, photo: string) => void;
   marketplaces: Marketplace[];
   /** Called after this handset sends a text, so sibling panels can refetch at once. */
   onActivity: () => void;
   refreshToken: number;
 }) {
   const [draft, setDraft] = useState("");
+  const [photo, setPhoto] = useState<string | null>(null);
   const [marketplaceId, setMarketplaceId] = useState<MarketplaceId>("furniture");
   const [pending, setPending] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -89,9 +97,8 @@ export function Phone({
     onSuccess: (data) => setLocal((rows) => rows.filter((r) => !data.messages.some((m) => m.id === r.id))),
   });
   const polled = poll.data?.messages ?? [];
-  const messages = local.length
-    ? [...polled, ...local].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
-    : polled;
+  const messages = Array.from(new Map([...polled, ...local].map((message) => [message.id, message])).values())
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   const sending = pending !== null;
 
   async function send(text: string) {
@@ -104,6 +111,15 @@ export function Phone({
       const res = await postSimSms({ actor, body, marketplaceId });
       // Keep only this handset's side; notifications to the other phone show up over there.
       const handsetNumber = res.inbound.fromNumber;
+      if (actor === "seller") {
+        const listingId = listedPhotoId(res.outbound.filter((m) => m.toNumber === handsetNumber).map((m) => m.body));
+        if (listingId) {
+          onPhoto(listingId, photo ?? BUILT_IN_SIM_PHOTO);
+          setPhoto(null);
+        } else if (/^CANCEL$/i.test(body)) {
+          setPhoto(null);
+        }
+      }
       setLocal((rows) => [...rows, res.inbound, ...res.outbound.filter((m) => m.toNumber === handsetNumber)]);
       setRefreshToken((n) => n + 1);
       onActivity();
@@ -114,6 +130,13 @@ export function Phone({
       setPending(null);
       inputRef.current?.focus();
     }
+  }
+
+  function attachBuiltInPhoto() {
+    if (sending) return;
+    setSendError(null);
+    setPhoto(BUILT_IN_SIM_PHOTO);
+    if (!draft.trim()) setDraft("SELL ");
   }
 
   function onSubmit(e: FormEvent) {
@@ -199,10 +222,10 @@ export function Phone({
             </header>
           </div>
 
-          <Thread actor={actor} messages={messages} pending={pending} loading={poll.loading} error={poll.error} />
+          <Thread actor={actor} photos={photos} messages={messages} pending={pending} loading={poll.loading} error={poll.error} />
 
           {actor === "buyer" && (
-            <BuyPanel open={buyOpen} marketplaceId={marketplaceId} refreshToken={refreshToken + activityToken} onActivity={onActivity} />
+            <BuyPanel photos={photos} open={buyOpen} marketplaceId={marketplaceId} refreshToken={refreshToken + activityToken} onActivity={onActivity} />
           )}
 
           {/* Suggestions */}
@@ -235,6 +258,20 @@ export function Phone({
           {/* Composer */}
           <form onSubmit={onSubmit} className="flex flex-col gap-1.5 px-3 pb-1 pt-1">
             {sendError && <ErrorNote message={sendError} prefix="Not delivered" />}
+            {actor === "seller" && (
+              <div className="flex items-center text-[11px] text-(--imsg-meta)">
+                <button type="button" disabled={sending} onClick={attachBuiltInPhoto} className="rounded-full border border-(--imsg-hairline) px-3 py-1.5 text-(--imsg-sent) focus-visible:outline-2 focus-visible:outline-(--imsg-sent) disabled:opacity-40">
+                  {photo ? "Change photo" : "Attach photo"}
+                </button>
+              </div>
+            )}
+            {photo && (
+              <div className="flex items-center gap-2">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={photo} alt="Attached listing photo" className="h-16 w-20 rounded-lg object-contain" />
+                <button type="button" disabled={sending} onClick={() => setPhoto(null)} className="text-[11px] text-(--imsg-sent) underline disabled:opacity-40">Remove photo</button>
+              </div>
+            )}
             <div className="flex min-h-[36px] items-center rounded-full border border-(--imsg-hairline) pl-3.5 pr-1 focus-within:border-(--imsg-meta)">
               <input
                 ref={inputRef}
@@ -268,14 +305,131 @@ export function Phone({
   );
 }
 
+export function LivePhone({
+  side,
+  messages,
+  loading,
+  error,
+  updatedAt,
+  number,
+  onSent,
+}: {
+  side: "buyer" | "service";
+  messages: LiveMessage[];
+  loading: boolean;
+  error: string | null;
+  updatedAt: number | null;
+  number: string | null;
+  onSent: () => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const displayedMessages: Message[] = messages.map((message) => ({
+    ...message,
+    dialEventId: message.id,
+    fromNumber: "",
+    toNumber: "",
+    direction:
+      side === "buyer"
+        ? message.direction
+        : message.direction === "inbound"
+          ? "outbound"
+          : "inbound",
+  }));
+  const title = side === "buyer" ? "Live buyer phone" : "PingMarket service phone";
+  const headingId = `live-phone-${side}-heading`;
+
+  async function send() {
+    const body = draft.trim();
+    if (!body || sending) return;
+    setSending(true);
+    setSendError(null);
+    try {
+      await apiFetch("/api/live/dial", {
+        method: "POST",
+        body: JSON.stringify({ side, body }),
+      });
+      setDraft("");
+      onSent();
+    } catch (error) {
+      setSendError(errorMessage(error));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <section aria-labelledby={headingId} className="flex min-w-0 flex-col items-center gap-3">
+      <div className="flex w-full max-w-[400px] flex-col items-center gap-1 text-center">
+        <h2 id={headingId} className="text-sm font-semibold tracking-tight">{title}</h2>
+        <p className="text-[11px] text-muted">{number ? prettyNumber(number) : "Number not configured"}</p>
+        <div className="flex items-center gap-2 text-[11px] text-muted">
+          <LiveStatus updatedAt={updatedAt} loading={loading} error={error} />
+          <span className="rounded-full bg-emerald-500/15 px-1.5 py-px font-bold uppercase tracking-wider text-emerald-700">Live</span>
+        </div>
+      </div>
+
+      <div className="imsg w-full max-w-[400px] rounded-[3.25rem] bg-black p-[11px] shadow-[0_0_0_2px_#3a3a3c,0_30px_70px_-24px_rgba(0,0,0,0.55)]">
+        <div className="relative flex h-[700px] flex-col overflow-hidden rounded-[2.6rem] bg-(--imsg-screen) text-(--imsg-ink)">
+          <div className="relative z-10 border-b border-(--imsg-hairline) bg-(--imsg-bar) backdrop-blur-xl">
+            <div className="relative flex h-11 items-center justify-between px-7 pt-1.5 text-[15px] font-semibold tabular-nums">
+              <span>9:41</span>
+              <span aria-hidden className="absolute left-1/2 top-2.5 h-[26px] w-[92px] -translate-x-1/2 rounded-full bg-black" />
+              <StatusIcons />
+            </div>
+            <header className="grid grid-cols-[3.5rem_1fr_3.5rem] items-start px-2 pb-2 pt-1">
+              <span aria-hidden className="flex h-11 items-center pl-1 text-(--imsg-sent)"><ChevronLeft /></span>
+              <div className="flex flex-col items-center">
+                <span aria-hidden className="flex size-12 items-center justify-center rounded-full bg-gradient-to-b from-[#a6acb9] to-[#858994] text-white"><PingMini /></span>
+                <p className="mt-1 flex items-center gap-0.5 text-[12px] leading-tight">PingMarket <span aria-hidden className="text-(--imsg-meta)"><ChevronRight /></span></p>
+                <p className="text-[10px] tabular-nums text-(--imsg-meta)">{number ? prettyNumber(number) : "Not configured"}</p>
+              </div>
+              <span className="flex h-11 items-center justify-end pr-1">
+                <span title="Live Dial conversation" className="rounded-full bg-emerald-400 px-1.5 py-px text-[8.5px] font-bold uppercase tracking-wider text-black">Live</span>
+              </span>
+            </header>
+          </div>
+          <Thread
+            actor={side === "buyer" ? "buyer" : "seller"}
+            photos={{}}
+            messages={displayedMessages}
+            pending={null}
+            loading={loading}
+            error={error}
+          />
+          <form onSubmit={(event) => { event.preventDefault(); void send(); }} className="flex flex-col gap-1.5 px-3 pb-1 pt-1">
+            {sendError && <ErrorNote message={sendError} prefix="Not delivered" />}
+            <div className="flex min-h-[36px] items-center rounded-full border border-(--imsg-hairline) pl-3.5 pr-1 focus-within:border-(--imsg-meta)">
+              <input
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                placeholder="iMessage"
+                aria-label={`${title} message`}
+                maxLength={1600}
+                disabled={sending}
+                className="min-w-0 flex-1 bg-transparent py-1.5 text-[16px] text-(--imsg-ink) placeholder:text-(--imsg-meta) focus:outline-none"
+              />
+              {draft.trim() && <button type="submit" disabled={sending} aria-label="Send" className="flex size-7 shrink-0 items-center justify-center rounded-full bg-(--imsg-sent) text-white transition-opacity hover:brightness-110 disabled:opacity-40"><ArrowUp /></button>}
+            </div>
+          </form>
+          <span aria-hidden className="mx-auto mb-2 mt-2 h-[5px] w-[134px] shrink-0 rounded-full bg-(--imsg-ink)" />
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function Thread({
   actor,
+  photos,
   messages,
   pending,
   loading,
   error,
 }: {
   actor: SimActor;
+  photos: SimPhotos;
   messages: Message[];
   /** Text this handset is sending right now: shown as an outgoing bubble plus a typing indicator. */
   pending: string | null;
@@ -325,6 +479,18 @@ function Thread({
             )}
             <Bubble mine={mine} tail={tail} spaced={!groupedWithPrev && !stamp} title={formatAbsolute(m.createdAt)}>
               <Linkified text={m.body} />
+              {[
+                ...new Set(m.body.match(/\bD\d+\b/g) ?? []),
+              ].map((id) => {
+                const source = messagePhotoSource(id, m.body, photos);
+                return source ? (
+                  <figure key={id} className="mt-2">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={source} alt={`Seller photo for listing ${id}`} className="max-h-52 w-full rounded-xl object-contain" onLoad={() => endRef.current?.scrollIntoView({ block: "end" })} />
+                    <figcaption className="mt-1 text-[11px]">{id} · Seller photo</figcaption>
+                  </figure>
+                ) : null;
+              })}
             </Bubble>
             {mine && i === lastMineIndex && showDelivered && (
               <p className="mt-0.5 self-end pr-1 text-[11px] font-medium text-(--imsg-meta)">Delivered</p>

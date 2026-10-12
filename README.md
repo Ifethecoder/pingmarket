@@ -32,7 +32,9 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Open [localhost:3000/dashboard](http://localhost:3000/dashboard) for the marketplace dashboard or [localhost:3000/sim](http://localhost:3000/sim) for the buyer and seller phone interface.
+Open [localhost:3000](http://localhost:3000) to go straight to the simulated buyer and seller phones at `/sim`. The [live view](http://localhost:3000/live) shows the real Dial conversation, SMS seller negotiation, and Keewano project analytics. The [operator dashboard](http://localhost:3000/dashboard) remains available.
+
+`/live` reads real messages from the configured Dial buyer/service pair and excludes simulator and local inbound-test messages. It polls messages every 4 seconds and Keewano every 30 seconds. Dial must forward its signed webhook to this app's `/api/dial/webhook`; the live view does not register a webhook or send a test SMS. Keewano credentials enable the live analytics automatically after a server restart. Analytics cover the whole Keewano project, including simulator activity and synthetic backfills.
 
 Add your integration credentials to `.env.local` using the settings below. Keep credentials server-side and out of version control.
 

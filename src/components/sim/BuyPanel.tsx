@@ -6,10 +6,12 @@ import { errorMessage, getListings, getOffers, getOrders, postConfirm, postSimBu
 import { formatCents } from "../dashboard/format";
 import { usePolling } from "../dashboard/hooks";
 import { simulatorPurchases } from "./purchases";
+import { listingPhotoSource, type SimPhotos } from "./photos";
 
 export const BUYER_MARKETPLACE_STORAGE_KEY = "pingmarket.sim.buyer-marketplace";
 
-export function BuyPanel({ open, marketplaceId, refreshToken, onActivity }: {
+export function BuyPanel({ open, marketplaceId, refreshToken, onActivity, photos }: {
+  photos: SimPhotos;
   open: boolean;
   marketplaceId: MarketplaceId;
   refreshToken: number;
@@ -86,10 +88,19 @@ export function BuyPanel({ open, marketplaceId, refreshToken, onActivity }: {
       {(notice || inventory.loading) && <p role="status" className="mt-1 text-[11px] text-(--imsg-meta)">{notice ?? "Loading items…"}</p>}
       {!inventory.loading && !inventory.error && !purchases.length && <p className="mt-1 text-[11px] text-(--imsg-meta)">No seller items available in this marketplace.</p>}
       <ul className="mt-1.5 min-h-0 max-h-[150px] space-y-1.5 overflow-y-auto">
-        {purchases.map(({ listing, order, amountCents }) => {
+        {purchases.map(({ listing, order, amountCents }, index) => {
           const paid = order?.paymentStatus === "paid";
+          const oakDeskIndex = purchases
+            .slice(0, index)
+            .filter(({ listing: previous }) => /\boak desk\b/i.test(previous.title)).length;
+          const photo = listingPhotoSource(listing.id, listing.title, oakDeskIndex, photos);
           return (
             <li key={listing.id} className="rounded-lg border border-(--imsg-hairline) bg-(--imsg-screen) px-2.5 py-2">
+              {photo && (
+                // Simulation photos stay in browser session state, including the built-in asset.
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={photo} alt={listing.title} className="mb-2 max-h-32 w-full rounded-md object-contain" />
+              )}
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0">
                   <p className="truncate text-[12px] font-medium" title={listing.title}>{listing.id} · {listing.title}</p>
