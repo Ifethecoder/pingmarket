@@ -1,0 +1,1 @@
+ALTER TABLE "orders" ADD COLUMN "payout_claimed_at" timestamp with time zone;

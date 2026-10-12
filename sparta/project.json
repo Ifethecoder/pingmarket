@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "name": "PingMarket SMS checkout",
+  "templateId": "digital-shop",
+  "seed": "seed.json",
+  "missions": "missions.json",
+  "checks": "checks.json",
+  "agent": { "command": ["node", "--import", "tsx", "agent.mts"], "timeoutSec": 60 }
+}

@@ -1,6 +1,7 @@
 /**
  * Stripe test-mode Checkout (PM-11). All Stripe-specific code lives here.
- * Hosted Checkout only: card details never touch PingMarket. No Connect, no payouts.
+ * Hosted Checkout only: card details never touch PingMarket. After a confirmed payment the seller is paid
+ * with a Stripe Connect test transfer (`payouts.ts`); no live payouts or settlement.
  * An order becomes `paid` only after the server reads the Checkout Session from Stripe with the secret key
  * (`confirmOrderPayment`: on return from Checkout or on demand) or receives it in an optional signed webhook.
  * Both paths go through `applyPaidCheckoutSession`. The redirect URL alone never marks anything paid.
@@ -40,6 +41,7 @@ export type CheckoutSessionSnapshot = Pick<
 >;
 
 let client: Stripe | null = null;
+let payoutClient: Stripe | null = null;
 
 /** True when `STRIPE_SECRET_KEY` holds a test-mode key. Live keys are refused (test mode only). */
 export function isStripeConfigured(): boolean {
@@ -54,6 +56,40 @@ export function getStripe(): Stripe {
   }
   client ??= new Stripe(process.env.STRIPE_SECRET_KEY!.trim());
   return client;
+}
+
+/**
+ * Memoized client for seller payouts with bounded latency (10s timeout, 1 network retry): payouts run after
+ * the response, and an ambiguous timeout is safe because the transfer is replayed with the same idempotency
+ * key and looked up by `transfer_group` first.
+ */
+export function getPayoutStripe(): Stripe {
+  if (!isStripeConfigured()) {
+    throw new OrderError("STRIPE_NOT_CONFIGURED", "Stripe not configured (set STRIPE_SECRET_KEY to a test-mode key)");
+  }
+  payoutClient ??= new Stripe(process.env.STRIPE_SECRET_KEY!.trim(), { timeout: 10_000, maxNetworkRetries: 1 });
+  return payoutClient;
+}
+
+/**
+ * Runs post-payment work (seller payout + payment texts). Routes pass `next/server`'s `after` so the
+ * response does not wait on Stripe transfers; the default runs it inline (scripts, tests).
+ */
+export type Scheduler = (task: () => Promise<void>) => void | Promise<void>;
+const inline: Scheduler = (task) => task();
+
+/**
+ * After an order is paid: pays the seller unless already done, then (first time only) texts both sides,
+ * so the seller's "Sold!" text can include the payout result. Never throws.
+ */
+export async function settlePaidOrder(
+  orderId: string,
+  { changed, stripe, db }: { changed: boolean; stripe?: StripePayoutClient; db?: Db },
+): Promise<void> {
+  const conn = db ?? (await getDb());
+  const order = await getOrder(orderId, conn);
+  if (order && order.payoutStatus !== "paid") await payoutAfterPaid(orderId, { stripe, db: conn });
+  if (changed) await notifyOrderPaid(orderId, conn);
 }
 
 export interface CheckoutOptions {
@@ -122,8 +158,9 @@ export function orderIdOfSession(session: Pick<CheckoutSessionSnapshot, "client_
  * an order reference that resolves to an existing order (and equals `expectedOrderId` when given);
  * `payment_status` "paid"; `amount_total` equal to the order amount; currency "usd". Only then calls
  * `markOrderPaid` (idempotent). Expected failures are returned, not thrown.
- * Once the order is paid, pays the seller (`payoutSeller`) unless that already happened; a payout problem
- * is recorded on the order and never changes this result. The first time it is paid, both sides are texted.
+ * Once the order is paid, `settlePaidOrder` (seller payout, then the payment texts the first time) runs via
+ * `schedule`: inline by default, after the response when a route passes `after`. A payout problem is
+ * recorded on the order and never changes this result.
  */
 export async function applyPaidCheckoutSession(
   session: Omit<CheckoutSessionSnapshot, "url" | "status">,
@@ -131,7 +168,8 @@ export async function applyPaidCheckoutSession(
     expectedOrderId,
     db,
     payoutClient,
-  }: { expectedOrderId?: string; db?: Db; payoutClient?: StripePayoutClient } = {},
+    schedule = inline,
+  }: { expectedOrderId?: string; db?: Db; payoutClient?: StripePayoutClient; schedule?: Scheduler } = {},
 ): Promise<ApplyPaidResult> {
   if (session.livemode) return { outcome: "rejected", reason: "livemode", order: null };
   const orderId = orderIdOfSession(session);
@@ -152,10 +190,8 @@ export async function applyPaidCheckoutSession(
   }
   try {
     const { order: paid, changed } = await markOrderPaid({ orderId: order.id, sessionId: session.id }, conn);
-    if (paid.payoutStatus === "paid") return { outcome: "paid", order: paid, changed };
-    await payoutAfterPaid(paid.id, { stripe: payoutClient, db: conn });
-    // First time this order is paid: buyer gets a receipt, seller a sale + payout text (best effort).
-    if (changed) await notifyOrderPaid(paid.id, conn);
+    if (paid.payoutStatus === "paid" && !changed) return { outcome: "paid", order: paid, changed };
+    await schedule(() => settlePaidOrder(paid.id, { changed, stripe: payoutClient, db: conn }));
     return { outcome: "paid", order: (await getOrder(paid.id, conn)) ?? paid, changed };
   } catch (err) {
     // Already paid by a different session (logged loudly by markOrderPaid).
@@ -184,7 +220,12 @@ export interface ConfirmResult {
  */
 export async function confirmOrderPayment(
   orderId: string,
-  { sessionId, stripe: injected, db }: { sessionId?: string; stripe?: StripeCheckoutClient; db?: Db } = {},
+  {
+    sessionId,
+    stripe: injected,
+    db,
+    schedule = inline,
+  }: { sessionId?: string; stripe?: StripeCheckoutClient; db?: Db; schedule?: Scheduler } = {},
 ): Promise<ConfirmResult> {
   const conn = db ?? (await getDb());
   const order = await getOrder(orderId, conn);
@@ -194,7 +235,7 @@ export async function confirmOrderPayment(
     // Already paid: Stripe is only consulted to (re)try a seller payout that has not succeeded yet,
     // e.g. after Connect was enabled.
     if (order.payoutStatus === "paid") return { order, confirmed: true, sessionStatus: null, paymentStatus: null };
-    await payoutAfterPaid(order.id, { stripe: payoutClient, db: conn });
+    await schedule(() => payoutAfterPaid(order.id, { stripe: payoutClient, db: conn }));
     return { order: (await getOrder(order.id, conn)) ?? order, confirmed: true, sessionStatus: null, paymentStatus: null };
   }
   const id = sessionId ?? order.stripeCheckoutSessionId;
@@ -208,7 +249,7 @@ export async function confirmOrderPayment(
     if (isResourceMissing(err)) throw new OrderError("SESSION_NOT_FOUND", `Checkout session not found for order ${order.id}`);
     throw err;
   }
-  const result = await applyPaidCheckoutSession(session, { expectedOrderId: order.id, db: conn, payoutClient });
+  const result = await applyPaidCheckoutSession(session, { expectedOrderId: order.id, db: conn, payoutClient, schedule });
   const status = { sessionStatus: session.status, paymentStatus: session.payment_status };
   switch (result.outcome) {
     case "paid":
@@ -237,9 +278,10 @@ async function completedSessionError(
   orderId: string,
   db: Db,
   client: StripeCheckoutClient,
+  schedule: Scheduler,
 ): Promise<OrderError> {
   const payoutClient = isPayoutClient(client) ? client : undefined;
-  const result = await applyPaidCheckoutSession(session, { expectedOrderId: orderId, db, payoutClient });
+  const result = await applyPaidCheckoutSession(session, { expectedOrderId: orderId, db, payoutClient, schedule });
   if (result.outcome === "paid") return new OrderError("ORDER_NOT_PENDING", "Order already paid");
   return new OrderError("PAYMENT_PROCESSING", `Payment for order ${orderId} is being processed by Stripe`);
 }
@@ -255,7 +297,12 @@ async function completedSessionError(
  */
 export async function startCheckout(
   orderId: string,
-  { origin, client: injected, db }: { origin: string; client?: StripeCheckoutClient; db?: Db },
+  {
+    origin,
+    client: injected,
+    db,
+    schedule = inline,
+  }: { origin: string; client?: StripeCheckoutClient; db?: Db; schedule?: Scheduler },
 ): Promise<{ url: string; sessionId: string; reused: boolean }> {
   const stripe = injected ?? getStripe();
   const conn = db ?? (await getDb());
@@ -278,7 +325,7 @@ export async function startCheckout(
   // `complete` on a pending order = paid but not yet recorded (or async payment processing).
   // On a `failed` order it is the session whose async payment failed, so a retry replaces it.
   if (stored?.status === "complete" && order.paymentStatus === "pending") {
-    throw await completedSessionError(stored, order.id, conn, stripe);
+    throw await completedSessionError(stored, order.id, conn, stripe, schedule);
   }
 
   const [context] = await conn
@@ -309,7 +356,7 @@ export async function startCheckout(
       await stripe.checkout.sessions.expire(stored.id);
     } catch (err) {
       const now = await stripe.checkout.sessions.retrieve(stored.id);
-      if (now.status === "complete") throw await completedSessionError(now, order.id, conn, stripe);
+      if (now.status === "complete") throw await completedSessionError(now, order.id, conn, stripe, schedule);
       if (now.status !== "expired") throw err;
     }
   }
@@ -333,7 +380,7 @@ export async function startCheckout(
   if (current.stripeCheckoutSessionId) {
     const winner = await stripe.checkout.sessions.retrieve(current.stripeCheckoutSessionId);
     if (winner.status === "open" && winner.url) return { url: winner.url, sessionId: winner.id, reused: true };
-    if (winner.status === "complete") throw await completedSessionError(winner, order.id, conn, stripe);
+    if (winner.status === "complete") throw await completedSessionError(winner, order.id, conn, stripe, schedule);
   }
   throw new Error(`Concurrent checkout for order ${order.id} left no open session; retry`);
 }

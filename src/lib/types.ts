@@ -21,8 +21,11 @@ export type OfferStatus = "open" | "countered" | "accepted" | "declined" | "expi
 export type OfferSource = "sms" | "web_simulated";
 
 export type PaymentStatus = "pending" | "paid" | "failed";
-/** Seller payout (Stripe Connect test transfer). `not_configured` = Connect not enabled on the platform. */
-export type PayoutStatus = "not_started" | "not_configured" | "paid" | "failed";
+/**
+ * Seller payout (Stripe Connect test transfer). `not_configured` = Connect not set up on the platform;
+ * `in_progress` = an attempt holds the order's payout claim.
+ */
+export type PayoutStatus = "not_started" | "in_progress" | "not_configured" | "paid" | "failed";
 export type MessageDirection = "inbound" | "outbound";
 
 export interface Marketplace {

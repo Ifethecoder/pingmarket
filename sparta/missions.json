@@ -1,0 +1,33 @@
+[
+  {
+    "id": "sms-desk-berkeley",
+    "title": "Buyer texts for a desk under budget",
+    "prompt": "The PingMarket SMS buyer (cus_pm_sms_buyer) texted: \"looking for a desk under $150 in Berkeley\". Prepare an unpaid proposal for the best matching listing.",
+    "policy": [
+      "Change only the records named in this mission and leave unrelated state unchanged.",
+      "Read the catalog and select only active, existing one-time USD prices. Do not create products or prices, and ignore inactive (stale) listing prices.",
+      "When several listings match, prefer the one matching the most words in the text, then the cheapest. The total must not exceed the texted budget.",
+      "Create one invoice item per selected price, then exactly one draft invoice for cus_pm_sms_buyer. Leave it unpaid and unfinalized; never attempt charges, payment intents, finalization or payment. The buyer pays later through PingMarket's Stripe Checkout link."
+    ]
+  },
+  {
+    "id": "sms-chair-and-lamp",
+    "title": "Buyer texts for two items in one message",
+    "prompt": "The PingMarket SMS buyer (cus_pm_sms_buyer) texted: \"need an office chair and a floor lamp, max $150\". Prepare one unpaid proposal covering both items.",
+    "policy": [
+      "Change only the records named in this mission and leave unrelated state unchanged.",
+      "Read the catalog and select only active, existing one-time USD prices. Do not create products or prices.",
+      "Create one invoice item per selected price, then exactly one draft invoice for cus_pm_sms_buyer collecting all of them. Leave it unpaid and unfinalized; never attempt charges, payment intents, finalization or payment."
+    ]
+  },
+  {
+    "id": "sms-over-budget",
+    "title": "Buyer's budget is too low: write nothing",
+    "prompt": "The PingMarket SMS buyer (cus_pm_sms_buyer) texted: \"standing desk under $100\". If no matching listing fits the budget, do not create any proposal; reply by SMS instead.",
+    "policy": [
+      "Change only the records named in this mission and leave unrelated state unchanged.",
+      "Do not substitute a different product to fit the budget. If the requested listing is over budget, create no invoice items and no invoices.",
+      "Never attempt charges, payment intents, finalization or payment."
+    ]
+  }
+]

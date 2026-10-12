@@ -163,6 +163,8 @@ export const orders = pgTable("orders", {
   payoutAttempts: integer("payout_attempts").notNull().default(0),
   /** Time of the last payout outcome (paid / failed / not_configured). */
   payoutAt: timestamp("payout_at", { withTimezone: true }),
+  /** When a payout attempt claimed the order (`payout_status = 'in_progress'`); stale after 2 minutes. */
+  payoutClaimedAt: timestamp("payout_claimed_at", { withTimezone: true }),
   createdAt: createdAt(),
 });
 

@@ -1,0 +1,32 @@
+{
+  "name": "pingmarket-sms-checkout",
+  "version": 1,
+  "epoch": 1789516800,
+  "data": {
+    "customers": [
+      { "id": "cus_pm_sms_buyer", "name": "PingMarket SMS buyer (u_sms_buyer)", "email": "sms-buyer@pingmarket.test" }
+    ],
+    "products": [
+      { "id": "prod_pm_d1", "name": "Oak desk", "description": "D1 · Berkeley · Solid oak writing desk with two drawers." },
+      { "id": "prod_pm_d2", "name": "Ergonomic office chair", "description": "D2 · Oakland · Mesh ergonomic office chair with lumbar support." },
+      { "id": "prod_pm_d3", "name": "Standing desk, adjustable", "description": "D3 · Berkeley · Electric sit-stand desk with memory presets." },
+      { "id": "prod_pm_d4", "name": "Mid-century bookshelf", "description": "D4 · San Francisco · Walnut-finish five-shelf bookshelf." },
+      { "id": "prod_pm_d5", "name": "Floor lamp, brass", "description": "D5 · Berkeley · Brass arc floor lamp." },
+      { "id": "prod_pm_d6", "name": "Abstract wall art print, 24x36", "description": "D6 · Berkeley · Large abstract print." },
+      { "id": "prod_pm_d7", "name": "Custom portrait commission (digital)", "description": "D7 · Remote · Digital portrait commission." },
+      { "id": "prod_pm_d8", "name": "Vintage concert poster set", "description": "D8 · Oakland · Set of vintage concert posters." }
+    ],
+    "prices": [
+      { "id": "price_pm_d1", "product": "prod_pm_d1", "unit_amount": 12000 },
+      { "id": "price_pm_d2", "product": "prod_pm_d2", "unit_amount": 9500 },
+      { "id": "price_pm_d3", "product": "prod_pm_d3", "unit_amount": 22000 },
+      { "id": "price_pm_d4", "product": "prod_pm_d4", "unit_amount": 8000 },
+      { "id": "price_pm_d5", "product": "prod_pm_d5", "unit_amount": 4500 },
+      { "id": "price_pm_d6", "product": "prod_pm_d6", "unit_amount": 6000 },
+      { "id": "price_pm_d7", "product": "prod_pm_d7", "unit_amount": 15000 },
+      { "id": "price_pm_d8", "product": "prod_pm_d8", "unit_amount": 3500 },
+      { "id": "price_pm_d1_stale", "product": "prod_pm_d1", "unit_amount": 9000, "active": false },
+      { "id": "price_pm_d7_monthly", "product": "prod_pm_d7", "unit_amount": 2500, "recurring": { "interval": "month" } }
+    ]
+  }
+}
