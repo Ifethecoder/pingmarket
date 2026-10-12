@@ -83,6 +83,8 @@ The dashboard connects the buyer journey and seller workflow:
 
 The phone interface at `/sim` connects buyer and seller conversations to the same listings, search, negotiation, and payment services used by the dashboard and SMS gateway.
 
+![The /sim page: seller and buyer phones texting the Furniture Market number, with the live event trace](docs/images/sim-page.png)
+
 Sellers publish listings and respond to offers. Buyers search, request details, negotiate, and use **Buy** to open Stripe Checkout. Buying an available item reserves it at the asking price; buying through an accepted offer preserves the agreed price. Repeated checkout requests reuse the order and open session.
 
 After checkout, the server retrieves payment status from Stripe before recording the sale. The seller receives a **Sold!** message, and the buyer receives a receipt. **Check payment** confirms the order when the return from Checkout is interrupted. Canceled checkout retains the buyer's reservation so payment can resume.
