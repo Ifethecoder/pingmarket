@@ -13,7 +13,8 @@ import { trackListingViewed } from "../keewano/track";
 import { createListing, getListing, ListingError, updateListingStatus } from "../listings/service";
 import { dbNegotiation, NegotiationError, type NegotiationOutcome } from "../negotiation/db-service";
 import { createOffer, OfferError } from "../offers/service";
-import { getOrCreateOrderForOffer } from "../orders/service";
+import { getOrCreateOrderForOffer, OrderError } from "../orders/service";
+import { buySimListing, PurchaseError } from "../payments/purchase";
 import { runSearch, type RunSearchOptions } from "../search/service";
 import type { Listing, MarketplaceId, Offer, OfferSource, SearchResponse } from "../types";
 import { clarifyListing, parseSms, type SmsIntent } from "./intent";
@@ -34,6 +35,7 @@ import {
   truncate,
 } from "./notify";
 import { describeError } from "./outbound";
+import { simCatalog } from "./sim-catalog";
 import type { ListingDraft } from "./ports";
 
 export { MAX_SMS_CHARS };
@@ -74,6 +76,7 @@ export interface SmsSession {
 
 export interface SmsRouterOptions {
   search?: Omit<RunSearchOptions, "db">;
+  checkoutOrigin?: string;
   /** Defaults to the drizzle negotiation service (`dbNegotiation`). */
   negotiation?: NegotiationPort;
 }
@@ -139,7 +142,7 @@ const HELP: Record<SmsActor["role"], string> = {
   buyer: [
     "PingMarket buyer commands:",
     "SEARCH office chair under $100 in Berkeley",
-    "DETAILS D2 · OFFER D2 80",
+    "DETAILS D2 · OFFER D2 80 · BUY",
     "ACCEPT O7 · DECLINE O7 · AGENT 1",
     "HELP · STOP",
   ].join("\n"),
@@ -209,7 +212,13 @@ async function handleSell(ctx: Ctx, intent: Extract<SmsIntent, { type: "sell" }>
 }
 
 async function handleSearch(ctx: Ctx, query: string): Promise<OutboundSms[]> {
-  const resp = await runSearch({ query, marketplaceId: ctx.marketplaceId }, { ...ctx.opts.search, db: ctx.db });
+  const search = await runSearch(
+    { query, marketplaceId: ctx.marketplaceId },
+    { ...ctx.opts.search, db: ctx.db, includeReserved: isSim(ctx) },
+  );
+  const resp = isSim(ctx)
+    ? { ...search, nativeListings: await simCatalog(search.nativeListings, ctx.actor.userId, ctx.db) }
+    : search;
   ctx.session.lastSearch = resp;
   const q = truncate(query, 40);
   const lines: string[] = [];
@@ -222,7 +231,7 @@ async function handleSearch(ctx: Ctx, query: string): Promise<OutboundSms[]> {
       const where = l.location ? ` · ${truncate(l.location, 24)}` : "";
       lines.push(`${i + 1}) ${l.id} ${truncate(l.title, 40)} — ${money(l.priceCents, l.currency)}${where}`);
     });
-    lines.push(`Reply OFFER ${native[0].id} ${Math.max(1, Math.round((native[0].priceCents * 0.8) / 100))} to make an offer.`);
+    if (!isSim(ctx)) lines.push(`Reply OFFER ${native[0].id} ${Math.max(1, Math.round((native[0].priceCents * 0.8) / 100))} to make an offer.`);
   }
   const { darwin } = resp;
   const total = resp.externalCapabilities.length;
@@ -238,10 +247,48 @@ async function handleSearch(ctx: Ctx, query: string): Promise<OutboundSms[]> {
     lines.push(`Darwin asks: ${truncate(darwin.question, 160)}`);
   } else if (darwin.status === "error") {
     lines.push("External agent search is unavailable right now.");
-  } else if (darwin.status === "no_match") {
+  } else if (darwin.status === "no_match" && !isSim(ctx)) {
     lines.push("No external agents matched.");
   }
   return [reply(ctx, truncate(lines.join("\n"), MAX_SMS_CHARS))];
+}
+
+async function handleBuy(ctx: Ctx): Promise<OutboundSms[]> {
+  if (ctx.actor.role !== "buyer") return [notBuyer(ctx)];
+  if (!isSim(ctx)) return [reply(ctx, "Text BUY from the buyer simulator to receive Stripe checkout links.")];
+  if (!ctx.opts.checkoutOrigin) {
+    return [reply(ctx, "Checkout is unavailable because PingMarket's public URL is not configured.")];
+  }
+
+  // Exactly the products (and prices) the last SEARCH reply showed, in the same order.
+  const shown = ctx.session.lastSearch?.nativeListings.slice(0, 3) ?? [];
+  if (!shown.length) return [reply(ctx, "No purchasable PingMarket products are in your current results. Reply SEARCH <item> first.")];
+
+  const replies: OutboundSms[] = [];
+  for (const listing of shown) {
+    try {
+      const checkout = await buySimListing(listing.id, {
+        origin: ctx.opts.checkoutOrigin,
+        db: ctx.db,
+        priceCents: listing.priceCents,
+      });
+      const details = [
+        `${listing.id} ${truncate(listing.title, 60)}`,
+        money(checkout.order.amountCents, listing.currency),
+        listing.location ? `Location: ${truncate(listing.location, 60)}` : null,
+        listing.description ? truncate(listing.description, 120) : null,
+      ].filter(Boolean).join(" · ");
+      replies.push(reply(ctx, fitSms(`${details.replace(/\.+$/, "")}. Pay with Stripe:`, checkout.url)));
+    } catch (err) {
+      // Reserved for another buyer or sold since the search: say so in its slot to keep the order aligned.
+      if (err instanceof PurchaseError || err instanceof OrderError) {
+        replies.push(reply(ctx, `${listing.id} ${truncate(listing.title, 60)} is no longer available.`));
+        continue;
+      }
+      throw err;
+    }
+  }
+  return replies;
 }
 
 async function handleOffer(ctx: Ctx, listingCode: string, priceCents: number): Promise<OutboundSms[]> {
@@ -420,6 +467,8 @@ async function route(ctx: Ctx, intent: SmsIntent): Promise<OutboundSms[]> {
       return handleSell(ctx, intent);
     case "search":
       return handleSearch(ctx, intent.query);
+    case "buy":
+      return handleBuy(ctx);
     case "offer":
       return handleOffer(ctx, intent.listingCode, intent.priceCents);
     case "details":

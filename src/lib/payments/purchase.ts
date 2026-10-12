@@ -1,7 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { getDb, type Db } from "../db";
 import { nextOfferId } from "../db/ids";
-import { listings, offers, users } from "../db/schema";
+import { listings, offers, orders, users } from "../db/schema";
 import { toOffer } from "../offers/service";
 import { getOrder, getOrCreateOrderForOffer, OrderError } from "../orders/service";
 import { notifyTransition } from "../sms/notify";
@@ -27,8 +27,10 @@ export class PurchaseError extends Error {
 /** Reserves an item for the fixed simulator buyer; only Stripe confirmation records the sale. */
 export async function buySimListing(
   listingId: string,
-  { origin, client, db, schedule = (task) => task() }: {
+  { origin, client, db, schedule = (task) => task(), priceCents }: {
     origin: string;
+    /** Simulator catalog price shown to the buyer; defaults to the listing's asking price. */
+    priceCents?: number;
     client?: StripeCheckoutClient;
     db?: Db;
     schedule?: Scheduler;
@@ -55,9 +57,21 @@ export async function buySimListing(
       if (accepted.length !== 1 || accepted[0].buyerId !== buyer.userId) {
         throw new OrderError("LISTING_UNAVAILABLE", `Listing ${listing.id} is reserved for another buyer`);
       }
-      // Preserve the agreed price of an already accepted negotiated offer.
-      const offer = toOffer(accepted[0]);
+      // Preserve the agreed price of an already accepted negotiated offer. An earlier simulator BUY
+      // reservation is unpaid and was never negotiated, so it follows the price shown to the buyer.
+      let offer = toOffer(accepted[0]);
       const { order } = await getOrCreateOrderForOffer(offer.id, tx);
+      if (
+        priceCents !== undefined && offer.source === "web_simulated" &&
+        order.amountCents !== priceCents && order.paymentStatus !== "paid"
+      ) {
+        const now = new Date();
+        const [row] = await tx.update(offers).set({ proposedPriceCents: priceCents, updatedAt: now })
+          .where(eq(offers.id, offer.id)).returning();
+        offer = toOffer(row);
+        await tx.update(orders).set({ amountCents: priceCents }).where(eq(orders.id, order.id));
+        return { offer, order: { ...order, amountCents: priceCents }, declined: [] };
+      }
       return { offer, order, declined: [] };
     }
     if (listing.status !== "available") {
@@ -71,7 +85,7 @@ export async function buySimListing(
       listingId: listing.id,
       sellerId: listing.sellerId,
       buyerId: buyer.userId,
-      proposedPriceCents: listing.priceCents,
+      proposedPriceCents: priceCents ?? listing.priceCents,
       status: "accepted",
       lastActorId: buyer.userId,
       source: "web_simulated",

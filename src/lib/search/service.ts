@@ -21,6 +21,8 @@ import { parseBuyerQuery } from "./query";
 export interface RunSearchOptions {
   db?: Db;
   fetchImpl?: typeof fetch;
+  /** Simulator only: also return reserved listings so a pending simulated checkout doesn't hide them. */
+  includeReserved?: boolean;
 }
 
 export type SearchErrorCode = "UNKNOWN_PREVIOUS_RESPONSE";
@@ -79,7 +81,7 @@ export async function runSearch(req: SearchRequest, opts: RunSearchOptions = {})
             ? { previousResponseId: req.previousResponseId, searchToken: continuation.searchToken }
             : {}),
         });
-  const [native, darwin] = await Promise.all([searchNative(req, conn), darwinPromise]);
+  const [native, darwin] = await Promise.all([searchNative(req, conn, { includeReserved: opts.includeReserved }), darwinPromise]);
   const { outcome } = darwin;
 
   const searchId = newUuidId("as");

@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { marketplaceIdSchema } from "@/lib/contracts";
 import { internalError, parseJsonBody, validationError } from "@/lib/http";
+import { appOrigin } from "@/lib/payments/origin";
 import {
   getSimHandset,
   listSimThread,
@@ -41,7 +42,7 @@ export async function POST(req: Request) {
   const parsed = postSchema.safeParse(parsedBody.body);
   if (!parsed.success) return validationError(parsed.error);
   try {
-    return NextResponse.json(await simulateSms(parsed.data), { status: 201 });
+    return NextResponse.json(await simulateSms(parsed.data, { checkoutOrigin: appOrigin(req) }), { status: 201 });
   } catch (err) {
     return internalError("POST /api/sms/simulate", err);
   }

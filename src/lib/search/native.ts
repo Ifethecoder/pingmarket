@@ -4,7 +4,7 @@
  * (own marketplace + `cross_market` listings from other marketplaces). With no marketplace,
  * only `cross_market` listings are visible.
  */
-import { and, eq, or } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
 import { getDb, type Db } from "../db";
 import { listings, marketplaces, type ListingRow } from "../db/schema";
 import type { NativeListingResult, SearchRequest } from "../types";
@@ -34,7 +34,11 @@ function sameLocation(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase();
 }
 
-export async function searchNative(req: SearchRequest, db?: Db): Promise<NativeListingResult[]> {
+export async function searchNative(
+  req: SearchRequest,
+  db?: Db,
+  { includeReserved = false }: { includeReserved?: boolean } = {},
+): Promise<NativeListingResult[]> {
   const conn = db ?? (await getDb());
   const parsed = parseBuyerQuery(req.query);
   const maxPriceCents = req.maxPriceCents ?? parsed.maxPriceCents;
@@ -44,7 +48,7 @@ export async function searchNative(req: SearchRequest, db?: Db): Promise<NativeL
     ? or(eq(listings.marketplaceId, req.marketplaceId), eq(listings.visibility, "cross_market"))
     : eq(listings.visibility, "cross_market");
   const [rows, markets] = await Promise.all([
-    conn.select().from(listings).where(and(eq(listings.status, "available"), visibility)),
+    conn.select().from(listings).where(and(includeReserved ? inArray(listings.status, ["available", "reserved"]) : eq(listings.status, "available"), visibility)),
     conn.select().from(marketplaces),
   ]);
   const marketById = new Map(markets.map((m) => [m.id, m]));
@@ -108,8 +112,12 @@ export async function searchNative(req: SearchRequest, db?: Db): Promise<NativeL
     (a, b) =>
       b.score - a.score ||
       Number(a.result.crossMarket) - Number(b.result.crossMarket) ||
-      a.row.priceCents - b.row.priceCents ||
-      a.row.id.localeCompare(b.row.id, "en", { numeric: true }),
+      (includeReserved
+        // Simulator: a seller's fresh, still-available listing should surface first.
+        ? Number(a.row.status !== "available") - Number(b.row.status !== "available") ||
+          b.row.id.localeCompare(a.row.id, "en", { numeric: true })
+        : a.row.priceCents - b.row.priceCents ||
+          a.row.id.localeCompare(b.row.id, "en", { numeric: true })),
   );
   return scored.map((s) => s.result);
 }

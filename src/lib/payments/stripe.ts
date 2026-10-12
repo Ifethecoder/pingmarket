@@ -354,7 +354,9 @@ export async function startCheckout(
   // A session's return URLs cannot be changed after creation. A simulator resume of a
   // dashboard checkout closes that unpaid session before creating one that returns to /sim.
   const returnMatches = !returnPath || !stored?.success_url || new URL(stored.success_url).pathname === returnPath;
-  if (stored?.status === "open" && stored.url && returnMatches) {
+  // A simulator BUY can re-price an unpaid order, so an open session for the old amount is replaced.
+  const amountMatches = !stored || stored.amount_total == null || stored.amount_total === order.amountCents;
+  if (stored?.status === "open" && stored.url && returnMatches && amountMatches) {
     return { url: stored.url, sessionId: stored.id, reused: true };
   }
   if (stored && stored.status !== "expired" && stored.status !== "complete") {

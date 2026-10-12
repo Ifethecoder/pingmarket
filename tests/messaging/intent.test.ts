@@ -55,6 +55,7 @@ test("search and lookup commands retain user intent without provider calls", () 
   assert.deepEqual(parseSms("DETAILS D42"), { type: "details", listingCode: "D42" });
   assert.deepEqual(parseSms("AGENT 1"), { type: "agent", index: 1 });
   assert.deepEqual(parseSms("EDIT D42 price $130"), { type: "edit", listingCode: "D42", changes: "price $130" });
+  assert.deepEqual(parseSms("buy"), { type: "buy" });
 });
 test("unfamiliar text stays unrecognized; malformed prices and oversized input are rejected", () => {
   assert.equal(parseSms("hello there").type, "unrecognized");

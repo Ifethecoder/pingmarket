@@ -3,14 +3,12 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import type { Marketplace, MarketplaceId, Message } from "@/lib/types";
 import type { LiveMessage } from "@/lib/sms/live";
-import { MARKETPLACE_IDS } from "@/lib/types";
 import { errorMessage, getSimThread, postSimSms, type SimActor } from "../dashboard/api";
 import { apiFetch } from "../dashboard/api";
 import { formatAbsolute } from "../dashboard/format";
 import { usePolling } from "../dashboard/hooks";
 import { ErrorNote, LiveStatus } from "../dashboard/ui";
-import { BuyPanel, BUYER_MARKETPLACE_STORAGE_KEY } from "./BuyPanel";
-import { BUILT_IN_SIM_PHOTO, listedPhotoId, messagePhotoSource, type SimPhotos } from "./photos";
+import { BUILT_IN_SIM_PHOTO, listedPhotoId, threadPhotoSources, type SimPhotos } from "./photos";
 import "./imessage.css";
 
 const QUICK_REPLIES: Record<SimActor, string[]> = {
@@ -72,24 +70,11 @@ export function Phone({
   const [marketplaceId, setMarketplaceId] = useState<MarketplaceId>("furniture");
   const [pending, setPending] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [buyOpen, setBuyOpen] = useState(false);
   // Rows returned by our own POST, shown until a poll catches up so the thread never flickers.
   const [local, setLocal] = useState<Message[]>([]);
   // Bumped after our own send so the thread refetches without waiting for the next poll.
   const [refreshToken, setRefreshToken] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (actor !== "buyer") return;
-    try {
-      const stored = window.sessionStorage.getItem(BUYER_MARKETPLACE_STORAGE_KEY);
-      if (stored && MARKETPLACE_IDS.includes(stored as MarketplaceId)) {
-        queueMicrotask(() => setMarketplaceId(stored as MarketplaceId));
-      }
-    } catch {
-      // Use the default marketplace if storage is unavailable.
-    }
-  }, [actor]);
 
   const poll = usePolling(() => getSimThread(actor), {
     intervalMs: 2000,
@@ -222,11 +207,15 @@ export function Phone({
             </header>
           </div>
 
-          <Thread actor={actor} photos={photos} messages={messages} pending={pending} loading={poll.loading} error={poll.error} />
-
-          {actor === "buyer" && (
-            <BuyPanel photos={photos} open={buyOpen} marketplaceId={marketplaceId} refreshToken={refreshToken + activityToken} onActivity={onActivity} />
-          )}
+          <Thread
+            actor={actor}
+            photos={photos}
+            messages={messages}
+            pending={pending}
+            pendingPhoto={pending !== null ? photo : null}
+            loading={poll.loading}
+            error={poll.error}
+          />
 
           {/* Suggestions */}
           <div className="flex gap-1.5 overflow-x-auto px-3 pb-1.5 pt-1 [scrollbar-width:none]">
@@ -234,9 +223,7 @@ export function Phone({
               <button
                 type="button"
                 disabled={sending}
-                aria-expanded={buyOpen}
-                aria-controls="buyer-purchases"
-                onClick={() => setBuyOpen((open) => !open)}
+                onClick={() => void send("BUY")}
                 className="shrink-0 rounded-full border border-(--imsg-sent)/45 px-3 py-1 text-[13px] text-(--imsg-sent) transition-colors hover:bg-(--imsg-sent)/10 focus-visible:outline-2 focus-visible:outline-(--imsg-sent) disabled:opacity-40"
               >
                 Buy
@@ -425,6 +412,7 @@ function Thread({
   photos,
   messages,
   pending,
+  pendingPhoto = null,
   loading,
   error,
 }: {
@@ -433,6 +421,8 @@ function Thread({
   messages: Message[];
   /** Text this handset is sending right now: shown as an outgoing bubble plus a typing indicator. */
   pending: string | null;
+  /** Photo attached to the pending text, shown on the sender's side. */
+  pendingPhoto?: string | null;
   loading: boolean;
   error: string | null;
 }) {
@@ -445,6 +435,7 @@ function Thread({
   // inbound to PingMarket = sent from this phone
   const lastMineIndex = messages.findLastIndex((m) => m.direction === "inbound");
   const showDelivered = pending === null && lastMineIndex !== -1 && lastMineIndex === messages.length - 1;
+  const photoSources = threadPhotoSources(messages.map((m) => m.body), photos);
 
   return (
     <div
@@ -470,8 +461,13 @@ function Thread({
         const groupedWithPrev = !stamp && prev && sameSide(prev, m);
         const tail = !next || startsGap(m, next) || !sameSide(m, next) || (i === messages.length - 1 && pending !== null && !mine);
         const { day, time } = stampParts(m.createdAt);
+        // The seller attached the listing photo, so on their handset it also sits on their side of the
+        // thread (right after their SELL text), as well as in PingMarket's confirmation.
+        const sentPhotoId = actor === "seller" && !mine ? listedPhotoId([m.body]) : undefined;
+        const sentPhoto = sentPhotoId ? photos[sentPhotoId] : undefined;
         return (
           <div key={m.id} className="flex flex-col">
+            {sentPhoto && <SentPhoto src={sentPhoto} alt={`Your photo for listing ${sentPhotoId}`} onLoad={() => endRef.current?.scrollIntoView({ block: "end" })} />}
             {stamp && (
               <p className="mb-2 mt-3 text-center text-[11px] text-(--imsg-meta) first:mt-0">
                 <span className="font-semibold">{day}</span> {time}
@@ -479,18 +475,13 @@ function Thread({
             )}
             <Bubble mine={mine} tail={tail} spaced={!groupedWithPrev && !stamp} title={formatAbsolute(m.createdAt)}>
               <Linkified text={m.body} />
-              {[
-                ...new Set(m.body.match(/\bD\d+\b/g) ?? []),
-              ].map((id) => {
-                const source = messagePhotoSource(id, m.body, photos);
-                return source ? (
-                  <figure key={id} className="mt-2">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={source} alt={`Seller photo for listing ${id}`} className="max-h-52 w-full rounded-xl object-contain" onLoad={() => endRef.current?.scrollIntoView({ block: "end" })} />
-                    <figcaption className="mt-1 text-[11px]">{id} · Seller photo</figcaption>
-                  </figure>
-                ) : null;
-              })}
+              {[...photoSources[i]].map(([id, source]) => (
+                <figure key={id} className="mt-2">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={source} alt={`Seller photo for listing ${id}`} className="max-h-52 w-full rounded-xl object-contain" onLoad={() => endRef.current?.scrollIntoView({ block: "end" })} />
+                  <figcaption className="mt-1 text-[11px]">{id} · Seller photo</figcaption>
+                </figure>
+              ))}
             </Bubble>
             {mine && i === lastMineIndex && showDelivered && (
               <p className="mt-0.5 self-end pr-1 text-[11px] font-medium text-(--imsg-meta)">Delivered</p>
@@ -500,6 +491,7 @@ function Thread({
       })}
       {pending !== null && (
         <>
+          {pendingPhoto && <SentPhoto src={pendingPhoto} alt="Attached listing photo" className="opacity-70" />}
           <Bubble mine tail spaced={messages.at(-1)?.direction !== "inbound"} className="opacity-70">
             {pending}
           </Bubble>
@@ -509,6 +501,14 @@ function Thread({
       )}
       <div ref={endRef} />
     </div>
+  );
+}
+
+/** An image this handset sent: Messages shows it bare on the sender's side, without a bubble. */
+function SentPhoto({ src, alt, className = "", onLoad }: { src: string; alt: string; className?: string; onLoad?: () => void }) {
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src={src} alt={alt} onLoad={onLoad} className={`mt-[2px] max-h-52 max-w-[60%] self-end rounded-[18px] object-cover ${className}`} />
   );
 }
 

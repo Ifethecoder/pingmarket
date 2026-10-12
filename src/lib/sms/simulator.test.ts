@@ -105,7 +105,7 @@ describe("simulateSms", () => {
     );
     const body = res.outbound[0].body;
     expect(body).toMatch(/1\) D1 Oak desk/);
-    expect(body).toMatch(/Reply OFFER D1 \d+/);
+    expect(body).not.toMatch(/Reply OFFER/);
     expect(body).toMatch(/external agent/);
     const agent = await simulateSms({ actor: "buyer", body: "AGENT 1" }, { db });
     expect(agent.outbound[0].body).toMatch(/Not PingMarket inventory/);

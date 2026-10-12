@@ -40,6 +40,7 @@ export interface SimulateSmsInput {
 export interface SimulateSmsOptions {
   db?: Db;
   search?: Omit<RunSearchOptions, "db">;
+  checkoutOrigin?: string;
   /** Defaults to the drizzle negotiation service. */
   negotiation?: NegotiationPort;
   now?: () => number;
@@ -107,7 +108,7 @@ export async function simulateSms(input: SimulateSmsInput, opts: SimulateSmsOpti
       marketplaceId: input.marketplaceId ?? "furniture",
       session: sessions.get(handset.number, now),
       body: input.body,
-      opts: { search: opts.search, negotiation: opts.negotiation },
+      opts: { search: opts.search, negotiation: opts.negotiation, checkoutOrigin: opts.checkoutOrigin },
     }));
   } catch (err) {
     console.error("[sms-sim] router failed", err);

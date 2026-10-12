@@ -3,6 +3,7 @@ import type { ListingDraft } from "./ports.ts";
 export type SmsIntent =
   | { type: "sell"; draft: ListingDraft; missing: ("title" | "priceCents" | "location")[] }
   | { type: "search"; query: string }
+  | { type: "buy" }
   | { type: "offer"; listingCode: string; priceCents: number }
   | { type: "counter"; offerCode: string; priceCents: number }
   | { type: "accept" | "decline"; offerCode: string }
@@ -99,6 +100,7 @@ export function parseSms(body: string): SmsIntent {
     return { type: "agent", index: Number(args[0]) };
   }
   if (command === "SEARCH") return args.length ? { type: "search", query: text.slice(6).trim() } : invalid("What are you looking for?");
+  if (command === "BUY") return args.length ? invalid("Use BUY by itself.") : { type: "buy" };
   const naturalSell = /^(?:i(?:'d| would) like to sell|i(?:'m| am) selling|selling)\s+(?:my\s+)?(.+)$/is.exec(text);
   if (naturalSell) return parseSell(naturalSell[1]);
   if (/^(?:looking for|i(?:'m| am) looking for|i need|find me)\b/i.test(text)) return { type: "search", query: text };
