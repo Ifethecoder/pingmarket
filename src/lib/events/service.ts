@@ -163,15 +163,18 @@ export async function listTraceEvents(limit = 50, db?: Db): Promise<TraceEvent[]
         ];
         if (o.payoutStatus === "not_started") return events;
         const account = sellerAccountId ? ` (acct_…${sellerAccountId.slice(-4)})` : "";
+        const reason = truncate(o.payoutError ?? "unknown error", 120);
         const summary =
           o.payoutStatus === "paid"
             ? `Seller payout ${formatMoney(o.payoutAmountCents ?? 0, o.payoutCurrency ?? "USD")} → ${sellerId ?? "seller"}${account} for ${o.id}`
-            : o.payoutStatus === "failed"
-              ? `Seller payout failed for ${o.id}: ${truncate(o.payoutError ?? "unknown error", 120)}`
-              : `Seller payout not configured for ${o.id} (enable Stripe Connect)`;
+            : o.payoutStatus === "in_progress"
+              ? `Seller payout in progress for ${o.id}`
+              : o.payoutStatus === "failed"
+                ? `Seller payout failed for ${o.id}: ${reason}`
+                : `Seller payout not configured for ${o.id}: ${reason}`;
         events.push({
           id: `payout:${o.id}`,
-          at: (o.payoutAt ?? paidAt).toISOString(),
+          at: (o.payoutStatus === "in_progress" ? (o.payoutClaimedAt ?? paidAt) : (o.payoutAt ?? paidAt)).toISOString(),
           kind: "payout",
           summary,
           detail: {

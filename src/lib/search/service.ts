@@ -10,6 +10,7 @@ import { desc, eq } from "drizzle-orm";
 import { getDb, type Db } from "../db";
 import { newUuidId } from "../db/ids";
 import { agentSearches } from "../db/schema";
+import { trackSearch } from "../keewano/track";
 import { DARWIN_SKIPPED_OUTCOME } from "../darwin/normalize";
 import { runDarwinDiscovery, summarizeForPersistence, type DarwinDiscoveryResult } from "../darwin/search";
 import type { SearchRequest, SearchResponse } from "../types";
@@ -81,9 +82,16 @@ export async function runSearch(req: SearchRequest, opts: RunSearchOptions = {})
   const [native, darwin] = await Promise.all([searchNative(req, conn), darwinPromise]);
   const { outcome } = darwin;
 
+  const searchId = newUuidId("as");
+  trackSearch(searchId, {
+    marketplaceId: req.marketplaceId ?? null,
+    nativeCount: native.length,
+    darwinStatus: outcome.status,
+    externalCount: darwin.capabilities.length,
+  });
   try {
     await conn.insert(agentSearches).values({
-      id: newUuidId("as"),
+      id: searchId,
       query: req.query,
       darwinSearchId: outcome.searchId,
       darwinResponseId: outcome.responseId,

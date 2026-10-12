@@ -112,7 +112,9 @@ Each paid order produces two sandbox transactions, using Connect **separate char
 1. the buyer's **payment**: the hosted Checkout charge on the platform, in USD;
 2. a **transfer to the seller**: from the platform to the seller's Custom test connected account. It is funded by that same charge (`source_transaction`), so it works even when the platform's available test balance is 0 or pending. It is grouped with the charge by `transfer_group` = order id (Checkout sets `payment_intent_data.transfer_group`).
 
-The payout runs automatically right after the payment is confirmed. That covers the return from Checkout, **Check payment status**, a repeated **Pay** click, and the optional webhook. A payout problem never affects the payment: the order stays `paid` and the payout state is shown next to it.
+The payout starts automatically once the payment is confirmed: on the return from Checkout, on **Check payment status**, on a repeated **Pay** click, or from the optional webhook. It runs **after the response is sent**, so the buyer's confirmation and Stripe's webhook never wait on the transfer. The dashboard picks up the result from its orders poll, typically within a few seconds. A payout problem never affects the payment: the order stays `paid` and the payout state is shown next to it.
+
+Orders that were already paid before payouts existed start as `not_started`. They are paid out on their next confirm (**Check payment status**) or retry.
 
 ### Enable Connect in the sandbox (one-time, in the Stripe Dashboard)
 
@@ -131,24 +133,53 @@ npm run stripe:sellers -- --payout-pending                  # also retry payouts
 Each seller gets one connected account in **the platform's country** (cross-border transfers are not available to every platform). It is created with Stripe's documented test values, so no onboarding is needed:
 
 - **US platform:** test DOB / ID number, `address_full_match`, and `btok_us_verified`.
-- **JP platform:** kana and kanji name and address, the identity-document test token `file_identity_document_success`, and test bank `1100000` / `0001234`.
+- **JP platform:** kana and kanji name, a fictional kana/kanji address (架空市 架空町 1-1; Stripe documents no JP address test token), the identity-document test token `file_identity_document_success`, and test bank `1100000` / `0001234`.
 
-The account id is stored on the user (`users.stripe_account_id`) and reused.
+The account id is stored on the user (`users.stripe_account_id`) and reused. Before creating one, the app looks for an existing account with `metadata.pingmarketUserId` among the newest 100 connected accounts, so a lost response doesn't leave a second account behind. If two requests create one at the same time, the loser deletes its own.
 
 ### Amounts and currency
 
-The buyer pays in USD (the app's prices). The transfer is made in the platform's **settlement currency**, using the charge's balance transaction. For a JP platform, a $110.00 charge settles as about ¥16,000. The transfer is that settled gross amount minus `PLATFORM_FEE_BPS` (basis points, default `0`; `250` = 2.5%), rounded to whole minor units. The order records `payout_amount_cents` (minor units, so yen for JPY), `payout_currency`, `platform_fee_cents`, `stripe_transfer_id` and `stripe_payment_intent_id`.
+The buyer pays in USD (the app's prices). The transfer is made in the platform's **settlement currency**, using the charge's balance transaction. For a JP platform, a $110.00 charge settles as about ¥16,000 gross.
+
+The seller is paid from the **net** amount, i.e. after Stripe's processing fee, minus `PLATFORM_FEE_BPS` (whole basis points, default `0`; `250` = 2.5% of net):
+
+```
+payout       = net - round(net * PLATFORM_FEE_BPS / 10000)
+platform fee = gross - payout        (Stripe's fee + the platform fee)
+```
+
+`PLATFORM_FEE_BPS` must be digits only (anything else counts as `0`, with a warning); values above `10000` are capped. A payout that comes to 0 is not transferred and is recorded as `not_configured` ("Payout amount is 0 (PLATFORM_FEE_BPS=…)").
+
+The order records:
+
+- `payout_amount_cents`: in minor units, so yen for JPY;
+- `payout_currency`;
+- `platform_fee_cents`: the platform's share of the gross;
+- `stripe_transfer_id`;
+- `stripe_payment_intent_id`.
+
+The charge must have succeeded and must not be refunded (even partly) or disputed. Otherwise the payout is `failed` with that reason and nothing is transferred.
 
 ### Payout states
 
 | `payout_status` | Meaning | Dashboard |
 |---|---|---|
-| `not_started` | payment not confirmed yet, or no test key | — |
-| `not_configured` | Connect not enabled / platform profile not reviewed | "Seller payout: enable Stripe Connect" |
-| `failed` | Stripe refused the transfer or account (short reason in `payout_error`) | "Seller payout failed" + **Retry payout** |
-| `paid` | transfer created | "Seller paid ¥…" |
+| `not_started` | payment not confirmed yet, no test key, or paid before payouts existed | "Seller payout pending" + **Retry payout** |
+| `in_progress` | an attempt holds the payout claim (released on its outcome; considered abandoned after 2 minutes) | "Seller payout in progress…" |
+| `not_configured` | Connect not enabled / platform profile not reviewed / payout amount 0 | "Seller payout: enable Stripe Connect" + **Retry payout** |
+| `failed` | Stripe refused, timed out, or the charge is refunded/disputed (short reason in `payout_error`) | "Seller payout failed" + **Retry payout** |
+| `paid` | transfer created (or an existing one adopted) | "Seller paid ¥…" |
 
-Retry with **Retry payout**, **Check payment status**, `POST /api/orders/{id}/payout`, or `npm run stripe:sellers -- --payout-pending`. Retries never create a second transfer. Concurrent attempts share one idempotency key; a new key is used only after a recorded failure, because Stripe replays a failed request's error for 24 hours.
+Retry with **Retry payout**, **Check payment status**, `POST /api/orders/{id}/payout`, or `npm run stripe:sellers -- --payout-pending`.
+
+How one transfer per order is guaranteed:
+
+1. **Atomic claim.** An attempt first sets `payout_status = 'in_progress'` in one conditional `UPDATE`. Any other attempt (confirm, webhook, retry route) answers `in_progress` without calling Stripe.
+2. **Lookup before create.** Every attempt first lists the order's transfers (`transfer_group` = order id, `metadata.orderId`). If a live, not fully reversed transfer exists, it is recorded instead of making a new one. This covers lost responses and failed database writes, even after the idempotency key has expired.
+3. **Idempotency key.** The key is `pingmarket-payout-{order}-{attempt}`. It moves to the next attempt number only after a definitive refusal (a 4xx such as insufficient funds), because Stripe replays a refused request's error for 24 hours. After timeouts, connection errors, 5xx or rate limits the same key is reused, so a request that actually went through is replayed rather than repeated.
+4. **Reversal.** If the order turns out to have recorded a different transfer meanwhile, the extra one is reversed.
+
+`POST /api/orders/{id}/payout` and `POST /api/stripe/sellers` are operator test routes. They answer `403` when `NODE_ENV=production` unless `ALLOW_TEST_PAYOUT_ROUTES=true`.
 
 ### Where to see the two transactions in the Stripe Dashboard (sandbox)
 

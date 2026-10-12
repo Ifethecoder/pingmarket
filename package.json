@@ -23,6 +23,8 @@
     "stripe:listen": "stripe listen --forward-to localhost:3000/api/stripe/webhook",
     "stripe:sellers": "node --env-file=.env.local --import tsx scripts/stripe-sellers.ts",
     "stripe:samples": "node --env-file=.env.local --import tsx scripts/stripe-samples.ts",
+    "keewano:check": "node --env-file=.env.local --import tsx scripts/keewano-check.ts",
+    "keewano:backfill": "node --env-file=.env.local --import tsx scripts/keewano-backfill.ts",
     "sparta:open": "worlds starters open --project ./sparta",
     "sparta:run": "worlds starters run --project ./sparta --all",
     "sparta:evidence": "worlds starters run --project ./sparta --all --runs 3 --scenario interruption --evidence ./sparta/evidence/submission.json"

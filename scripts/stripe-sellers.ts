@@ -6,6 +6,7 @@
  * first (only one process may open ./.pglite) or call POST /api/stripe/sellers on the running server.
  */
 import { getDb, isEmbeddedDb } from "../src/lib/db";
+import { formatMoney } from "../src/lib/events/service";
 import { isStripeConfigured } from "../src/lib/payments/stripe";
 import { payoutPendingOrders, provisionSellerAccounts } from "../src/lib/payments/payouts";
 
@@ -64,7 +65,9 @@ async function main() {
     for (const r of results) {
       console.log(
         `${r.order.id}: ${r.outcome}` +
-          (r.transferId ? ` ${r.transferId} ($${((r.order.payoutAmountCents ?? 0) / 100).toFixed(2)})` : "") +
+          (r.transferId
+            ? ` ${r.transferId} (${formatMoney(r.order.payoutAmountCents ?? 0, r.order.payoutCurrency ?? "USD")})`
+            : "") +
           (r.error ? ` (${r.error})` : ""),
       );
     }

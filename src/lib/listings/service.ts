@@ -3,6 +3,7 @@ import { MAX_PRICE_CENTS } from "../contracts";
 import { getDb, type Db } from "../db";
 import { nextListingId } from "../db/ids";
 import { listings, marketplaces, users, type ListingRow } from "../db/schema";
+import { trackListingCreated } from "../keewano/track";
 import type { CreateListingInput, Listing, ListingStatus, MarketplaceId } from "../types";
 
 export type ListingErrorCode =
@@ -82,7 +83,9 @@ export async function createListing(input: CreateListingInput, db?: Db): Promise
       visibility: input.visibility ?? "cross_market",
     })
     .returning();
-  return toListing(row);
+  const listing = toListing(row);
+  trackListingCreated(listing);
+  return listing;
 }
 
 /** Newest first. */

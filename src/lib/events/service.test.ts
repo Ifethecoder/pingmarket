@@ -92,7 +92,7 @@ describe("listTraceEvents orders", () => {
       .where(eq(orders.id, order.id));
     events = await listTraceEvents(50, orderDb);
     expect(events.find((e) => e.kind === "payout")?.summary).toBe(
-      `Seller payout not configured for ${order.id} (enable Stripe Connect)`,
+      `Seller payout not configured for ${order.id}: Stripe Connect not enabled`,
     );
     await orderDb
       .update(orders)

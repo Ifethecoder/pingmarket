@@ -579,3 +579,63 @@ describe("seller payouts over HTTP", () => {
     expect((await sellersPOST()).status).toBe(503);
   });
 });
+
+describe("payout failures and gates over HTTP", () => {
+  it("a non-Stripe payout error leaves the payment paid, the webhook 200, and the payout failed", async () => {
+    const listing = await createListing(
+      { sellerId: "u_seller_2", marketplaceId: "furniture", title: "Payout error stool", priceCents: 1900 },
+      db,
+    );
+    const offer = await createOffer({ listingId: listing.id, priceCents: 1900 }, db);
+    await db.update(offers).set({ status: "accepted" }).where(eq(offers.id, offer.id));
+    const res = await ordersPOST(
+      new Request("http://localhost/api/orders", { method: "POST", body: JSON.stringify({ offerId: offer.id }) }),
+    );
+    const { order } = (await res.json()) as { order: Order };
+    await attachCheckoutSession(order.id, "cs_test_payout_boom", null, db);
+    stubStripeForPayouts(1900, order.id);
+    vi.spyOn(getPayoutStripe().transfers, "list").mockRejectedValue(new TypeError("unexpected shape"));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const hook = await postWebhook(
+        sessionEvent("checkout.session.completed", {
+          id: "cs_test_payout_boom",
+          client_reference_id: order.id,
+          payment_status: "paid",
+          amount_total: 1900,
+          currency: "usd",
+        }),
+      );
+      expect(hook.status).toBe(200);
+      expect(await hook.json()).toMatchObject({ paymentStatus: "paid", changed: true });
+      await flushAfter();
+      expect(await getOrder(order.id, db)).toMatchObject({
+        paymentStatus: "paid",
+        payoutStatus: "failed",
+        payoutError: "TypeError: unexpected shape",
+      });
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("test payout routes answer 403 in production unless ALLOW_TEST_PAYOUT_ROUTES=true", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      const sellers = await sellersPOST();
+      expect(sellers.status).toBe(403);
+      expect(await sellers.json()).toMatchObject({ code: "TEST_ROUTES_DISABLED" });
+      const payout = await payoutPOST(new Request("http://localhost/api/orders/ORD1/payout", { method: "POST" }), {
+        params: Promise.resolve({ id: "ORD1" }),
+      });
+      expect(payout.status).toBe(403);
+      vi.stubEnv("ALLOW_TEST_PAYOUT_ROUTES", "true");
+      vi.stubEnv("STRIPE_SECRET_KEY", "");
+      expect((await sellersPOST()).status).toBe(503); // allowed through the gate, then needs a test key
+    } finally {
+      vi.stubEnv("NODE_ENV", "test");
+      vi.stubEnv("ALLOW_TEST_PAYOUT_ROUTES", "");
+    }
+  });
+});
+

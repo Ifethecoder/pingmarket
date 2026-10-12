@@ -3,6 +3,7 @@ import { MAX_PRICE_CENTS } from "../contracts";
 import { getDb, type Db } from "../db";
 import { nextOfferId } from "../db/ids";
 import { listings, offers, users, type OfferRow } from "../db/schema";
+import { trackOfferCreated } from "../keewano/track";
 import type { CreateOfferRequest, Offer, OfferStatus } from "../types";
 
 /** Seeded dashboard buyer used when `buyerId` is omitted. */
@@ -58,7 +59,7 @@ export async function createOffer(input: CreateOfferRequest, db?: Db): Promise<O
 
   // Lock the listing row so a concurrent status change (sold/reserved) cannot interleave
   // between the availability check and the insert.
-  return conn.transaction(async (tx) => {
+  const { offer, listing } = await conn.transaction(async (tx) => {
     const [listing] = await tx
       .select()
       .from(listings)
@@ -98,8 +99,10 @@ export async function createOffer(input: CreateOfferRequest, db?: Db): Promise<O
         expiresAt: new Date(Date.now() + OFFER_TTL_MS),
       })
       .returning();
-    return toOffer(row);
+    return { offer: toOffer(row), listing };
   });
+  trackOfferCreated(offer, { ...listing, createdAt: listing.createdAt.toISOString() });
+  return offer;
 }
 
 /** Newest first. */

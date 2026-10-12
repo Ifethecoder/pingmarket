@@ -7,6 +7,7 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { getDb, type Db } from "../db";
 import { nextOrderId } from "../db/ids";
 import { listings, offers, orders } from "../db/schema";
+import { trackOrderPaid } from "../keewano/track";
 import type { Order } from "../types";
 
 export type OrderErrorCode =
@@ -161,7 +162,8 @@ export async function markOrderPaid(
   db?: Db,
 ): Promise<{ order: Order; changed: boolean }> {
   const conn = db ?? (await getDb());
-  return conn.transaction(async (tx) => {
+  let offerCreatedAt: Date | undefined;
+  const result = await conn.transaction(async (tx) => {
     const [row] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1).for("update");
     if (!row) throw new OrderError("ORDER_NOT_FOUND", `Order ${orderId} not found`);
     if (row.paymentStatus === "paid") {
@@ -182,7 +184,7 @@ export async function markOrderPaid(
       .returning();
 
     const [listing] = await tx
-      .select({ id: listings.id, status: listings.status })
+      .select({ id: listings.id, status: listings.status, offerCreatedAt: offers.createdAt })
       .from(offers)
       .innerJoin(listings, eq(offers.listingId, listings.id))
       .where(eq(offers.id, row.offerId))
@@ -193,8 +195,13 @@ export async function markOrderPaid(
     } else if (listing) {
       await tx.update(listings).set({ status: "sold", updatedAt: new Date() }).where(eq(listings.id, listing.id));
     }
+    offerCreatedAt = listing?.offerCreatedAt;
     return { order: toOrder(updated), changed: true };
   });
+  if (result.changed && offerCreatedAt) {
+    trackOrderPaid({ id: result.order.offerId, createdAt: offerCreatedAt.toISOString() }, result.order.amountCents);
+  }
+  return result;
 }
 
 /**

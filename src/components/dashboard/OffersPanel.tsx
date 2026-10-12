@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Offer, OfferStatus, Order } from "@/lib/types";
-import { acceptOffer, ApiError, counterOffer, declineOffer, errorMessage, getOffers, getOrders, postCheckout, postConfirm, postOrder, postPayout } from "./api";
+import type { NegotiationInsight } from "@/lib/keewano/insight";
+import { acceptOffer, ApiError, counterOffer, declineOffer, errorMessage, getOfferInsight, getOffers, getOrders, postCheckout, postConfirm, postOrder, postPayout } from "./api";
 import { formatCents } from "./format";
 import { usePolling } from "./hooks";
 import { useToast } from "./Toasts";
@@ -257,6 +258,92 @@ function SellerActions({ offer, onChanged }: { offer: Offer; onChanged: () => vo
           Action failed: {error}
         </p>
       )}
+      <KeewanoTip offer={offer} disabled={disabled} onUseCounter={(cents) => setCounter((cents / 100).toFixed(2))} />
+    </div>
+  );
+}
+
+/** Live Keewano demand + counter history for this offer, with the recommended move. */
+function KeewanoTip({
+  offer,
+  disabled,
+  onUseCounter,
+}: {
+  offer: Offer;
+  disabled: boolean;
+  onUseCounter: (cents: number) => void;
+}) {
+  // One fetch per offer version; a result for an older version reads as loading.
+  const version = versionKey(offer);
+  const [result, setResult] = useState<
+    | { version: string; kind: "ready"; insight: NegotiationInsight }
+    | { version: string; kind: "off" }
+    | { version: string; kind: "error"; message: string }
+    | null
+  >(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getOfferInsight(offer.id)
+      .then(({ insight }) => !cancelled && setResult(insight ? { version, kind: "ready", insight } : { version, kind: "off" }))
+      .catch((err) => !cancelled && setResult({ version, kind: "error", message: errorMessage(err) }));
+    return () => {
+      cancelled = true;
+    };
+  }, [offer.id, version]);
+
+  const state = result?.version === version ? result : { kind: "loading" as const };
+  if (state.kind === "off") return null;
+  if (state.kind === "loading") {
+    return (
+      <p className="basis-full flex items-center gap-1 text-[11px] text-muted">
+        <Spinner /> Asking Keewano about demand for {offer.listingId}…
+      </p>
+    );
+  }
+  if (state.kind === "error") {
+    return <p className="basis-full font-mono text-[11px] text-muted">Keewano unavailable: {state.message}</p>;
+  }
+
+  const { insight } = state;
+  const { advice } = insight;
+  const facts = [
+    insight.otherOffers24h !== null && `${insight.otherOffers24h} other offer${insight.otherOffers24h === 1 ? "" : "s"} / 24h`,
+    insight.topOtherOfferCents !== null && `top ${formatCents(insight.topOtherOfferCents, insight.currency)}`,
+    insight.views24h !== null && `${insight.views24h} view${insight.views24h === 1 ? "" : "s"} / 24h`,
+    `offer ${insight.offerPct}% of ask`,
+  ].filter(Boolean);
+  return (
+    <div className="basis-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px]">
+      <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <Chip tone="accent" title={`Live Keewano query at ${insight.queriedAt}`}>
+          Keewano
+        </Chip>
+        <span className="text-muted">{facts.join(" · ")}</span>
+      </p>
+      <p className="mt-1 flex flex-wrap items-center gap-2">
+        <span className="font-semibold">
+          {advice.action === "accept"
+            ? `Suggest: accept ${formatCents(advice.priceCents, insight.currency)}`
+            : `Suggest: counter at ${formatCents(advice.priceCents, insight.currency)}`}
+        </span>
+        <span className="text-muted">({advice.reasons.join("; ")})</span>
+        {advice.action === "counter" && (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => onUseCounter(advice.priceCents)}
+            className={`${buttonClass.secondary} ml-auto py-0.5`}
+          >
+            Use {formatCents(advice.priceCents, insight.currency)}
+          </button>
+        )}
+      </p>
+      {insight.errors.length > 0 && (
+        <p className="mt-1 font-mono text-[10px] text-muted" title={insight.errors.join("\n")}>
+          {insight.errors.length} Keewano quer{insight.errors.length === 1 ? "y" : "ies"} failed; advice uses what answered.
+        </p>
+      )}
     </div>
   );
 }
@@ -437,36 +524,44 @@ function SellerPayout({ order, onChanged }: { order: Order; onChanged: () => voi
       </Chip>
     );
   }
-  if (order.payoutStatus === "not_configured") {
+  if (order.payoutStatus === "in_progress") {
     return (
-      <span role="status" className="text-[11px] text-muted" title={order.payoutError ?? undefined}>
-        Seller payout: enable Stripe Connect
+      <span role="status" className="text-[11px] text-muted">
+        Seller payout in progress…
       </span>
     );
   }
-  if (order.payoutStatus === "failed") {
-    return (
-      <>
-        <Chip tone="danger" title={order.payoutError ?? undefined}>
-          Seller payout failed
-        </Chip>
-        <button
-          type="button"
-          onClick={() => void retry()}
-          disabled={retrying}
-          className={buttonClass.secondary}
-          aria-label={`Retry the seller payout for order ${order.id}`}
-        >
-          {retrying && <Spinner />}
-          Retry payout
-        </button>
-        {error && (
-          <p role="alert" className="basis-full font-mono text-[11px] text-danger">
-            Payout error: {error}
-          </p>
-        )}
-      </>
+
+  const status =
+    order.payoutStatus === "failed" ? (
+      <Chip tone="danger" title={order.payoutError ?? undefined}>
+        Seller payout failed
+      </Chip>
+    ) : order.payoutStatus === "not_configured" ? (
+      <span role="status" className="text-[11px] text-muted" title={order.payoutError ?? undefined}>
+        Seller payout: enable Stripe Connect
+      </span>
+    ) : (
+      <span className="text-[11px] text-muted">Seller payout pending</span>
     );
-  }
-  return <span className="text-[11px] text-muted">Seller payout pending</span>;
+  return (
+    <>
+      {status}
+      <button
+        type="button"
+        onClick={() => void retry()}
+        disabled={retrying}
+        className={buttonClass.secondary}
+        aria-label={`Retry the seller payout for order ${order.id}`}
+      >
+        {retrying && <Spinner />}
+        Retry payout
+      </button>
+      {error && (
+        <p role="alert" className="basis-full font-mono text-[11px] text-danger">
+          Payout error: {error}
+        </p>
+      )}
+    </>
+  );
 }

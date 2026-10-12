@@ -11,7 +11,7 @@
  */
 import { money } from "../sms/text";
 import type { Listing, Offer } from "../types";
-import { bandLowerBound, listingKey, offerKey, pctBand, pctOfAsk } from "./catalog";
+import { bandLowerBound, listingKey, offerKey, pctOfAsk } from "./catalog";
 import { track } from "./ingest";
 import { isKeewanoQueryConfigured, keewanoQuery, lit, num } from "./query";
 
@@ -219,5 +219,3 @@ export async function tryNegotiationInsight(offer: Offer, listing: Listing, time
     return null;
   }
 }
-
-export { pctBand };

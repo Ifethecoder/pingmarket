@@ -492,7 +492,7 @@ export async function payoutSeller(
     // Settlement currency (e.g. USD charge -> JPY), net of Stripe's fee, minus the platform fee.
     const currency = balance.currency.toLowerCase();
     const bps = platformFeeBps();
-    const { payoutCents, platformFeeCents } = splitSale({ gross: balance.amount, net: balance.net }, bps);
+    const { payoutCents } = splitSale({ gross: balance.amount, net: balance.net }, bps);
 
     let transfer: TransferSummary | Pick<Stripe.Transfer, "id"> | null = await findExistingTransfer(client, order.id);
     let createdHere = false;
@@ -522,7 +522,8 @@ export async function payoutSeller(
         });
       }
     }
-    // An adopted transfer is recorded with its own amount (e.g. made before a fee change).
+    // An adopted transfer is recorded with its own amount (e.g. made before a fee change); the platform
+    // keeps the rest of the gross (Stripe's fee + PLATFORM_FEE_BPS).
     const amount = "amount" in transfer ? transfer.amount : payoutCents;
 
     const [updated] = await conn

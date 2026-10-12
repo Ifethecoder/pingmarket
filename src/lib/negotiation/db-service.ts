@@ -9,7 +9,8 @@
 import { and, eq, inArray, ne } from "drizzle-orm";
 import { MAX_PRICE_CENTS } from "../contracts";
 import { getDb, type Db } from "../db";
-import { listings, offers } from "../db/schema";
+import { listings, offers, type ListingRow } from "../db/schema";
+import { trackOfferTransition } from "../keewano/track";
 import { toOffer } from "../offers/service";
 import { getOrCreateOrderForOffer } from "../orders/service";
 import type { NegotiationPort } from "../sms/gateway";
@@ -72,13 +73,15 @@ async function transition(action: Action, input: TransitionInput, db?: Db): Prom
     throw new NegotiationError("INVALID_PRICE", `Counter price must be a positive whole number of cents <= ${MAX_PRICE_CENTS}.`);
   }
   const conn = db ?? (await getDb());
-  return conn.transaction(async (tx) => {
+  let listingRow: ListingRow | undefined;
+  const outcome = await conn.transaction(async (tx) => {
     // Lock order: listing first, then offer (same order as createOffer and seller edits).
     const [ref] = await tx.select({ listingId: offers.listingId }).from(offers).where(eq(offers.id, input.offerId)).limit(1);
     if (!ref) throw new NegotiationError("OFFER_NOT_FOUND", `No offer ${input.offerId}.`);
     const [listing] = await tx.select().from(listings).where(eq(listings.id, ref.listingId)).limit(1).for("update");
     const [offer] = await tx.select().from(offers).where(eq(offers.id, input.offerId)).limit(1).for("update");
     if (!offer || !listing) throw new NegotiationError("OFFER_NOT_FOUND", `No offer ${input.offerId}.`);
+    listingRow = listing;
 
     const { actorId } = input;
     if (actorId !== offer.buyerId && actorId !== offer.sellerId) {
@@ -153,6 +156,11 @@ async function transition(action: Action, input: TransitionInput, db?: Db): Prom
     await getOrCreateOrderForOffer(offer.id, tx);
     return { offer: toOffer(row), changed: true, declined: declined.map(toOffer) };
   });
+  if (outcome.changed && listingRow) {
+    const listing = { ...listingRow, createdAt: listingRow.createdAt.toISOString() };
+    trackOfferTransition(outcome.offer, listing, input.actorId, outcome.declined);
+  }
+  return outcome;
 }
 
 /** Seller counters an `open` offer: new proposed price, status `countered`. Throws `NegotiationError`. */

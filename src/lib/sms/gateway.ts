@@ -9,6 +9,7 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "../db";
 import { users } from "../db/schema";
+import { trackListingViewed } from "../keewano/track";
 import { createListing, getListing, ListingError, updateListingStatus } from "../listings/service";
 import { dbNegotiation, NegotiationError, type NegotiationOutcome } from "../negotiation/db-service";
 import { createOffer, OfferError } from "../offers/service";
@@ -26,7 +27,7 @@ import {
   fitSms,
   MAX_SMS_CHARS,
   money,
-  newOfferText,
+  newOfferTextWithInsight,
   notifyNewOffer,
   notifyTransition,
   sellerMovedText,
@@ -267,7 +268,7 @@ async function handleOffer(ctx: Ctx, listingCode: string, priceCents: number): P
   if (listing && ctx.counterpart && listing.sellerId === ctx.counterpart.userId) {
     return [
       reply(ctx, `${sent} We'll text you when the seller replies.`),
-      { to: ctx.counterpart.number, body: newOfferText(offer, listing) },
+      { to: ctx.counterpart.number, body: await newOfferTextWithInsight(offer, listing) },
     ];
   }
   if (isSim(ctx)) {
@@ -285,6 +286,7 @@ async function handleOffer(ctx: Ctx, listingCode: string, priceCents: number): P
 async function handleDetails(ctx: Ctx, listingCode: string): Promise<OutboundSms[]> {
   const listing = await getListing(listingCode, ctx.db);
   if (!listing) return [reply(ctx, `No listing ${listingCode}.`)];
+  trackListingViewed(listing, isSim(ctx) ? "sim" : "sms");
   const desc = listing.description ? ` ${truncate(listing.description, 200)}` : "";
   return [reply(ctx, `${describeListing(listing)} · ${listing.status}.${desc}`)];
 }

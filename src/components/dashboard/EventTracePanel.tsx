@@ -18,6 +18,16 @@ const kindStyle: Record<TraceEventKind, { tone: Tone; label: string }> = {
   payout: { tone: "success", label: "payout" },
 };
 
+/** Payout rows take their tone from the payout status in `detail`. */
+function eventStyle(ev: TraceEvent): { tone: Tone; label: string } {
+  const style = kindStyle[ev.kind] ?? { tone: "neutral" as Tone, label: ev.kind };
+  if (ev.kind !== "payout") return style;
+  const status = ev.detail?.payoutStatus;
+  const tone: Tone =
+    status === "paid" ? "success" : status === "failed" ? "danger" : status === "not_configured" ? "warning" : "neutral";
+  return { ...style, tone };
+}
+
 /** Which SMS path a trace row took: real Dial phone vs the /sim demo handsets. */
 function smsChannel(ev: TraceEvent): "dial" | "sim" | null {
   if (ev.kind !== "sms_inbound" && ev.kind !== "sms_outbound") return null;
@@ -65,7 +75,7 @@ export function EventTracePanel({ refreshToken }: { refreshToken: number }) {
       ) : (
         <ol className="max-h-[28rem] overflow-auto font-mono text-[11px]">
           {events.map((ev) => {
-            const style = kindStyle[ev.kind] ?? { tone: "neutral" as Tone, label: ev.kind };
+            const style = eventStyle(ev);
             const channel = smsChannel(ev);
             const hasDetail = ev.detail && Object.keys(ev.detail).length > 0;
             return (

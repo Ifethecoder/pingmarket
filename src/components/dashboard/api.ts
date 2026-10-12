@@ -11,6 +11,7 @@ import type {
 } from "@/lib/types";
 import type { TraceEvent } from "@/lib/events/types";
 import type { DarwinActView } from "@/lib/darwin/act";
+import type { NegotiationInsight } from "@/lib/keewano/insight";
 
 /** Error thrown by `apiFetch`; `message` is the server's `error` text or `HTTP {status}`. */
 export class ApiError extends Error {
@@ -101,6 +102,10 @@ export const acceptOffer = (offerId: string) =>
     // JSON body so apiFetch sends content-type application/json (the route's CSRF guard requires it).
     body: JSON.stringify({}),
   });
+
+/** Live Keewano recommendation for an offer awaiting the seller; `insight: null` when Keewano is not configured. */
+export const getOfferInsight = (offerId: string) =>
+  apiFetch<{ insight: NegotiationInsight | null; code?: string }>(`/api/offers/${encodeURIComponent(offerId)}/insight`);
 
 export const counterOffer = (offerId: string, priceCents: number) =>
   apiFetch<{ offer: Offer }>(`/api/offers/${encodeURIComponent(offerId)}/counter`, {

@@ -4,6 +4,7 @@
  * over Dial, or a /sim handset as a simulated row. Each side always gets the same wording.
  */
 import { getDb, type Db } from "../db";
+import { insightSmsLine, tryNegotiationInsight } from "../keewano/insight";
 import { getListing } from "../listings/service";
 import { getOrCreateOrderForOffer } from "../orders/service";
 import { isStripeConfigured, startCheckout } from "../payments/stripe";
@@ -34,10 +35,17 @@ export function declinedText(offer: Offer): string {
 
 // Seller-facing
 
-export function newOfferText(offer: Offer, listing: Listing): string {
+/** `tip`: the Keewano negotiation recommendation (`insightSmsLine`), when available. */
+export function newOfferText(offer: Offer, listing: Listing, tip?: string | null): string {
   return fitSms(
-    `New offer ${offer.id} on ${offer.listingId} (${truncate(listing.title, 60)}): ${money(offer.proposedPriceCents)}, asking ${money(listing.priceCents, listing.currency)}. Reply ACCEPT ${offer.id}, COUNTER ${offer.id} <price>, or DECLINE ${offer.id}.`,
+    `New offer ${offer.id} on ${offer.listingId} (${truncate(listing.title, 60)}): ${money(offer.proposedPriceCents)}, asking ${money(listing.priceCents, listing.currency)}. Reply ACCEPT ${offer.id}, COUNTER ${offer.id} <price>, or DECLINE ${offer.id}.${tip ? ` ${tip}` : ""}`,
   );
+}
+
+/** New-offer text for the seller, with the live Keewano recommendation when Keewano answers in time. */
+export async function newOfferTextWithInsight(offer: Offer, listing: Listing): Promise<string> {
+  const insight = await tryNegotiationInsight(offer, listing);
+  return newOfferText(offer, listing, insight ? insightSmsLine(insight) : null);
 }
 
 export function buyerAcceptedText(offer: Offer, orderId: string): string {
@@ -121,7 +129,7 @@ export async function notifyNewOffer(offer: Offer, db?: Db): Promise<Message | n
   const to = await sellerRecipient(offer, conn);
   if (!to) return null;
   const listing = await getListing(offer.listingId, conn);
-  return listing ? deliver(to, newOfferText(offer, listing), conn) : null;
+  return listing ? deliver(to, await newOfferTextWithInsight(offer, listing), conn) : null;
 }
 
 /**
