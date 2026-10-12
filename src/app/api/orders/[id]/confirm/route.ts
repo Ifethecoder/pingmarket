@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { jsonError, validationError } from "@/lib/http";
-import { paymentErrorResponse } from "@/lib/payments/route-errors";
+import { afterResponse, paymentErrorResponse } from "@/lib/payments/route-errors";
 import { confirmOrderPayment } from "@/lib/payments/stripe";
 
 const MAX_BODY_BYTES = 4096;
@@ -35,7 +35,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const parsed = confirmSchema.safeParse(body);
   if (!parsed.success) return validationError(parsed.error);
   try {
-    return NextResponse.json(await confirmOrderPayment(id, { sessionId: parsed.data.sessionId }));
+    // The seller payout runs after the response; the dashboard picks it up from its orders poll.
+    return NextResponse.json(
+      await confirmOrderPayment(id, { sessionId: parsed.data.sessionId, schedule: afterResponse }),
+    );
   } catch (err) {
     return paymentErrorResponse("POST /api/orders/[id]/confirm", err);
   }

@@ -22,7 +22,10 @@
     "dial:send-test": "node --env-file=.env.local --import tsx scripts/dial/send-test.ts",
     "stripe:listen": "stripe listen --forward-to localhost:3000/api/stripe/webhook",
     "stripe:sellers": "node --env-file=.env.local --import tsx scripts/stripe-sellers.ts",
-    "stripe:samples": "node --env-file=.env.local --import tsx scripts/stripe-samples.ts"
+    "stripe:samples": "node --env-file=.env.local --import tsx scripts/stripe-samples.ts",
+    "sparta:open": "worlds starters open --project ./sparta",
+    "sparta:run": "worlds starters run --project ./sparta --all",
+    "sparta:evidence": "worlds starters run --project ./sparta --all --runs 3 --scenario interruption --evidence ./sparta/evidence/submission.json"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
@@ -43,6 +46,7 @@
     "drizzle-kit": "^0.31.11",
     "eslint": "^9",
     "eslint-config-next": "16.4.0",
+    "sparta_worlds": "0.9.0-beta.3",
     "tailwindcss": "^4",
     "tsx": "^4.23.15",
     "typescript": "^5",

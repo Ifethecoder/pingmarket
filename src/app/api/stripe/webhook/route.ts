@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type Stripe from "stripe";
 import { internalError, jsonError } from "@/lib/http";
+import { afterResponse } from "@/lib/payments/route-errors";
 import { markOrderPaymentFailed, OrderError } from "@/lib/orders/service";
 import {
   applyPaidCheckoutSession,
@@ -49,7 +50,8 @@ export async function POST(req: Request) {
       case "checkout.session.completed":
       case "checkout.session.async_payment_succeeded": {
         const session = event.data.object;
-        const result = await applyPaidCheckoutSession(session);
+        // Seller payout + payment texts run after the 200 so Stripe never waits on a transfer.
+        const result = await applyPaidCheckoutSession(session, { schedule: afterResponse });
         if (result.outcome === "rejected") {
           if (result.reason === "order_not_found" || result.reason === "session_mismatch") {
             console.warn(`[stripe] webhook ${event.type} (${event.id}) not applied: ${REJECTION_REASON[result.reason]}`);

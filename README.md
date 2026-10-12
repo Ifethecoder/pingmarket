@@ -36,6 +36,7 @@ npm run db:migrate && npm run db:seed
 | `npm run db:migrate` / `db:seed` | Apply migrations / seed an external Postgres |
 | `npm run stripe:listen` | Forward Stripe test webhooks to `localhost:3000/api/stripe/webhook` (needs the Stripe CLI) |
 | `npm run stripe:sellers` | Create/reuse Stripe Connect test accounts for sellers (`-- --payout-pending` also retries seller payouts); stop `npm run dev` first or use `POST /api/stripe/sellers` |
+| `npm run sparta:open` / `sparta:run` / `sparta:evidence` | Test the SMS checkout agent against a [Sparta Worlds](https://www.usesparta.co) Stripe twin (Node 24+); see [sparta/README.md](./sparta/README.md) |
 
 ## Layout (Developer B modules)
 

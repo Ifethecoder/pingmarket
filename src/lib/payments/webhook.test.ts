@@ -4,7 +4,7 @@
  */
 import { eq } from "drizzle-orm";
 import Stripe from "stripe";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as checkoutPOST } from "@/app/api/orders/[id]/checkout/route";
 import { POST as confirmPOST } from "@/app/api/orders/[id]/confirm/route";
 import { POST as payoutPOST } from "@/app/api/orders/[id]/payout/route";
@@ -18,7 +18,7 @@ import { createListing, getListing } from "../listings/service";
 import { createOffer } from "../offers/service";
 import { attachCheckoutSession, getOrder, listOrders, markOrderPaid } from "../orders/service";
 import type { Order } from "../types";
-import { getStripe } from "./stripe";
+import { getPayoutStripe, getStripe } from "./stripe";
 
 const state = vi.hoisted(() => ({ db: null as unknown }));
 vi.mock("@/lib/db", async (importOriginal) => ({
@@ -26,18 +26,29 @@ vi.mock("@/lib/db", async (importOriginal) => ({
   getDb: async () => state.db,
 }));
 
+// `after()` needs a Next request scope; here deferred tasks are queued and run by `flushAfter()`.
+const deferred = vi.hoisted(() => ({ tasks: [] as Array<() => Promise<void>> }));
+vi.mock("next/server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/server")>()),
+  after: (task: () => Promise<void>) => {
+    deferred.tasks.push(task);
+  },
+}));
+async function flushAfter() {
+  while (deferred.tasks.length) await deferred.tasks.shift()!();
+}
+
 const SECRET = "whsec_route_test_secret";
 
 /**
- * Stubs the memoized real Stripe client (`getStripe()`) so payment confirmation + seller payout run
- * without network: a US platform, one connected account per seller, transfers succeed, and every
- * Checkout session is paid with an expanded charge settling `amount` USD. Call `mockRestore` via
- * `vi.restoreAllMocks()` afterwards.
+ * Stubs the memoized real Stripe clients (`getStripe()` for confirm, `getPayoutStripe()` for payouts) so
+ * payment confirmation + seller payout run without network: a US platform, one connected account per seller,
+ * transfers succeed, and every Checkout session is paid with a succeeded charge settling `amount` USD
+ * (net = gross; fees are covered in payouts.test.ts). Undo with `vi.restoreAllMocks()`.
  */
 function stubStripeForPayouts(amount: number, orderId: string) {
   vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_route_payouts");
-  const stripe = getStripe();
-  const retrieve = vi.spyOn(stripe.checkout.sessions, "retrieve").mockImplementation((async (id: string) => ({
+  const session = async (id: string) => ({
     id,
     object: "checkout.session",
     status: "complete",
@@ -47,20 +58,46 @@ function stubStripeForPayouts(amount: number, orderId: string) {
     metadata: { orderId },
     amount_total: amount,
     currency: "usd",
-    payment_intent: { id: `pi_${id}`, latest_charge: { id: `ch_${id}`, balance_transaction: { amount, currency: "usd" } } },
-  })) as unknown as typeof stripe.checkout.sessions.retrieve);
-  const accountsCreate = vi.spyOn(stripe.accounts, "create").mockImplementation((async (
+    payment_intent: {
+      id: `pi_${id}`,
+      latest_charge: {
+        id: `ch_${id}`,
+        status: "succeeded",
+        refunded: false,
+        amount_refunded: 0,
+        disputed: false,
+        balance_transaction: { amount, net: amount, currency: "usd" },
+      },
+    },
+  });
+  const stripe = getStripe();
+  const retrieve = vi
+    .spyOn(stripe.checkout.sessions, "retrieve")
+    .mockImplementation(session as unknown as typeof stripe.checkout.sessions.retrieve);
+  const payout = getPayoutStripe();
+  vi.spyOn(payout.checkout.sessions, "retrieve").mockImplementation(
+    session as unknown as typeof payout.checkout.sessions.retrieve,
+  );
+  const accountsCreate = vi.spyOn(payout.accounts, "create").mockImplementation((async (
     params: Stripe.AccountCreateParams,
-  ) => ({ id: `acct_${(params.metadata as Record<string, string>).pingmarketUserId}` })) as unknown as typeof stripe.accounts.create);
-  vi.spyOn(stripe.accounts, "retrieve").mockImplementation((async (id: string | null) => ({
+  ) => ({ id: `acct_${(params.metadata as Record<string, string>).pingmarketUserId}` })) as unknown as typeof payout.accounts.create);
+  vi.spyOn(payout.accounts, "list").mockImplementation((async () => ({
+    data: [],
+    has_more: false,
+  })) as unknown as typeof payout.accounts.list);
+  vi.spyOn(payout.accounts, "retrieve").mockImplementation((async (id: string | null) => ({
     id: id ?? "acct_platform",
     country: "US",
     default_currency: "usd",
     capabilities: { transfers: "active" },
-  })) as unknown as typeof stripe.accounts.retrieve);
-  const transfersCreate = vi.spyOn(stripe.transfers, "create").mockImplementation((async () => ({
+  })) as unknown as typeof payout.accounts.retrieve);
+  vi.spyOn(payout.transfers, "list").mockImplementation((async () => ({
+    data: [],
+    has_more: false,
+  })) as unknown as typeof payout.transfers.list);
+  const transfersCreate = vi.spyOn(payout.transfers, "create").mockImplementation((async () => ({
     id: `tr_route_${orderId}`,
-  })) as unknown as typeof stripe.transfers.create);
+  })) as unknown as typeof payout.transfers.create);
   return { retrieve, accountsCreate, transfersCreate };
 }
 let db: Db;
@@ -74,6 +111,10 @@ beforeAll(async () => {
 
 afterAll(() => {
   vi.unstubAllEnvs();
+});
+
+beforeEach(() => {
+  deferred.tasks.length = 0;
 });
 
 function sessionEvent(
@@ -384,14 +425,18 @@ describe("POST /api/orders/{id}/confirm", () => {
     try {
       const res = await confirm(order.id, JSON.stringify({ sessionId: "cs_test_ConfirmRoute1" }));
       expect(res.status).toBe(200);
+      // The buyer-facing response does not wait for the seller transfer: it runs after the response.
       expect(await res.json()).toMatchObject({
         confirmed: true,
         sessionStatus: "complete",
         paymentStatus: "paid",
-        order: { id: order.id, paymentStatus: "paid", payoutStatus: "paid", payoutAmountCents: 4200 },
+        order: { id: order.id, paymentStatus: "paid", payoutStatus: "not_started" },
       });
       expect(retrieve).toHaveBeenCalledWith("cs_test_ConfirmRoute1");
+      expect(transfersCreate).not.toHaveBeenCalled();
+      await flushAfter();
       expect(transfersCreate).toHaveBeenCalledTimes(1);
+      expect(await getOrder(order.id, db)).toMatchObject({ payoutStatus: "paid", payoutAmountCents: 4200 });
 
       // Empty body is allowed; a fully settled order is answered without asking Stripe again.
       retrieve.mockClear();
@@ -459,6 +504,8 @@ describe("seller payouts over HTTP", () => {
         }),
       );
       expect(await res.json()).toMatchObject({ paymentStatus: "paid", changed: true });
+      expect(transfersCreate).not.toHaveBeenCalled(); // deferred until after the 200
+      await flushAfter();
       expect(transfersCreate).toHaveBeenCalledTimes(1);
       expect(transfersCreate.mock.calls[0][0]).toMatchObject({
         amount: 3300,

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { OrderError } from "@/lib/orders/service";
-import { paymentErrorResponse } from "@/lib/payments/route-errors";
+import { afterResponse, paymentErrorResponse } from "@/lib/payments/route-errors";
 import { startCheckout } from "@/lib/payments/stripe";
 
 /**
@@ -31,7 +31,7 @@ function appOrigin(req: Request): string {
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
-    const { url, sessionId } = await startCheckout(id, { origin: appOrigin(req) });
+    const { url, sessionId } = await startCheckout(id, { origin: appOrigin(req), schedule: afterResponse });
     return NextResponse.json({ url, sessionId });
   } catch (err) {
     return paymentErrorResponse("POST /api/orders/[id]/checkout", err);

@@ -1,5 +1,5 @@
-/** Shared error -> HTTP mapping for the order payment routes (checkout, confirm). */
-import type { NextResponse } from "next/server";
+/** Shared helpers for the payment routes: error -> HTTP mapping, deferred work, test-route gate. */
+import { after, type NextResponse } from "next/server";
 import Stripe from "stripe";
 import { internalError, jsonError } from "../http";
 import { ORDER_ERROR_STATUS, OrderError } from "../orders/service";
@@ -17,4 +17,20 @@ export function paymentErrorResponse(context: string, err: unknown): NextRespons
     return jsonError(502, "Stripe request failed", { code: "STRIPE_ERROR" });
   }
   return internalError(context, err);
+}
+
+/** Runs post-payment work (seller payout, payment texts) after the response is sent. */
+export function afterResponse(task: () => Promise<void>): void {
+  after(task);
+}
+
+/**
+ * Operator test routes that move sandbox money (`/api/orders/{id}/payout`, `/api/stripe/sellers`) are off in
+ * production unless `ALLOW_TEST_PAYOUT_ROUTES=true`. Returns the 403 response, or null when allowed.
+ */
+export function testPayoutRoutesForbidden(): NextResponse | null {
+  if (process.env.NODE_ENV !== "production" || process.env.ALLOW_TEST_PAYOUT_ROUTES === "true") return null;
+  return jsonError(403, "Test payout routes are disabled in production (set ALLOW_TEST_PAYOUT_ROUTES=true)", {
+    code: "TEST_ROUTES_DISABLED",
+  });
 }

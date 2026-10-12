@@ -46,3 +46,5 @@ next-env.d.ts
 /.omc/
 # dial connectivity harness journal
 .local/
+# sparta worlds local state
+.worlds-dashboard/
