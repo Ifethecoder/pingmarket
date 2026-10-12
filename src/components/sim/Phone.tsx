@@ -24,6 +24,9 @@ const ACTOR_LABEL: Record<SimActor, { title: string; who: string }> = {
 /** Shown in the handset header: PingMarket's real Dial number. Simulated rows still use SIM_SERVICE_NUMBER. */
 const DISPLAY_SERVICE_NUMBER = "+15075744885";
 
+/** Demo pacing: the buyer's SEARCH reply lands this long after Enter, behind a typing indicator. */
+const SEARCH_REPLY_DELAY_MS = 5000;
+
 /** Messages-app style: a centered stamp appears when this much time separates two texts. */
 const STAMP_GAP_MS = 15 * 60 * 1000;
 
@@ -70,6 +73,8 @@ export function Phone({
   const [marketplaceId, setMarketplaceId] = useState<MarketplaceId>("furniture");
   const [pending, setPending] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
+  // While a delayed reply is held back: ids already on screen at send time, plus the sent text once stored.
+  const [held, setHeld] = useState<{ known: Set<string>; inbound: string | null } | null>(null);
   // Rows returned by our own POST, shown until a poll catches up so the thread never flickers.
   const [local, setLocal] = useState<Message[]>([]);
   // Bumped after our own send so the thread refetches without waiting for the next poll.
@@ -82,9 +87,10 @@ export function Phone({
     onSuccess: (data) => setLocal((rows) => rows.filter((r) => !data.messages.some((m) => m.id === r.id))),
   });
   const polled = poll.data?.messages ?? [];
-  const messages = Array.from(new Map([...polled, ...local].map((message) => [message.id, message])).values())
+  const allMessages = Array.from(new Map([...polled, ...local].map((message) => [message.id, message])).values())
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-  const sending = pending !== null;
+  const messages = held ? allMessages.filter((m) => held.known.has(m.id) || m.id === held.inbound) : allMessages;
+  const sending = pending !== null || held !== null;
 
   async function send(text: string) {
     const body = text.trim();
@@ -92,6 +98,9 @@ export function Phone({
     setPending(body);
     setDraft("");
     setSendError(null);
+    const delayReply = actor === "buyer" && /^SEARCH\b/i.test(body);
+    const replyAt = delayReply ? new Promise((resolve) => window.setTimeout(resolve, SEARCH_REPLY_DELAY_MS)) : null;
+    if (delayReply) setHeld({ known: new Set(messages.map((m) => m.id)), inbound: null });
     try {
       const res = await postSimSms({ actor, body, marketplaceId });
       // Keep only this handset's side; notifications to the other phone show up over there.
@@ -107,11 +116,18 @@ export function Phone({
       }
       setLocal((rows) => [...rows, res.inbound, ...res.outbound.filter((m) => m.toNumber === handsetNumber)]);
       setRefreshToken((n) => n + 1);
+      if (replyAt) {
+        // Show the sent text as Delivered, then reveal PingMarket's reply once the delay is up.
+        setHeld((h) => h && { ...h, inbound: res.inbound.id });
+        setPending(null);
+        await replyAt;
+      }
       onActivity();
     } catch (error) {
       setDraft(body);
       setSendError(errorMessage(error));
     } finally {
+      setHeld(null);
       setPending(null);
       inputRef.current?.focus();
     }
@@ -213,6 +229,7 @@ export function Phone({
             messages={messages}
             pending={pending}
             pendingPhoto={pending !== null ? photo : null}
+            typing={held !== null}
             loading={poll.loading}
             error={poll.error}
           />
@@ -413,6 +430,7 @@ function Thread({
   messages,
   pending,
   pendingPhoto = null,
+  typing = false,
   loading,
   error,
 }: {
@@ -423,6 +441,8 @@ function Thread({
   pending: string | null;
   /** Photo attached to the pending text, shown on the sender's side. */
   pendingPhoto?: string | null;
+  /** PingMarket is composing a reply (held back for demo pacing). */
+  typing?: boolean;
   loading: boolean;
   error: string | null;
 }) {
@@ -430,7 +450,7 @@ function Thread({
   const lastId = messages.at(-1)?.id;
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
-  }, [lastId, pending]);
+  }, [lastId, pending, typing]);
 
   // inbound to PingMarket = sent from this phone
   const lastMineIndex = messages.findLastIndex((m) => m.direction === "inbound");
@@ -499,6 +519,7 @@ function Thread({
           <TypingBubble />
         </>
       )}
+      {pending === null && typing && <TypingBubble />}
       <div ref={endRef} />
     </div>
   );
