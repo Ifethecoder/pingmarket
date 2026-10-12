@@ -137,7 +137,7 @@ async function main() {
         refunded += balance.amount;
         line += `\nOUT ${refund.id}  refund to buyer ${money(sale.cents, "usd")} (buyer cancelled)`;
       } else {
-        const { payoutCents } = splitSale(balance.amount, bps);
+        const { payoutCents } = splitSale({ gross: balance.amount, net: balance.net }, bps);
         const transfer = await stripe.transfers.create(
           {
             amount: payoutCents,

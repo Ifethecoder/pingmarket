@@ -63,7 +63,9 @@ function payoutClause(order: Order): string {
     case "not_configured":
       return "Your payout is on hold until PingMarket finishes Stripe Connect setup.";
     case "failed":
-      return "Your payout didn't go through yet; PingMarket will retry it.";
+      return "Your payout didn't go through yet; PingMarket will follow up.";
+    case "in_progress":
+      return "Your payout is being sent.";
     case "not_started":
       return "Your payout is pending.";
   }
