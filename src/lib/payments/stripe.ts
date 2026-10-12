@@ -38,7 +38,7 @@ export type CheckoutSessionSnapshot = Pick<
   | "payment_status"
   | "amount_total"
   | "currency"
->;
+> & { success_url?: string | null };
 
 let client: Stripe | null = null;
 let payoutClient: Stripe | null = null;
@@ -95,6 +95,8 @@ export async function settlePaidOrder(
 export interface CheckoutOptions {
   /** Absolute app origin for the return URLs, e.g. `http://localhost:3000`. */
   origin: string;
+  /** Trusted app page to return to after hosted Checkout. */
+  returnPath?: "/dashboard" | "/sim";
   /** Line item name; defaults to `PingMarket order {id} (offer {offerId})`. */
   productName?: string;
   client?: StripeCheckoutClient;
@@ -103,11 +105,11 @@ export interface CheckoutOptions {
 /** Creates a hosted test-mode Checkout Session for one order. Does not touch the database. */
 export async function createCheckoutSessionForOrder(
   order: Order,
-  { origin, productName, client: injected }: CheckoutOptions,
+  { origin, returnPath = "/dashboard", productName, client: injected }: CheckoutOptions,
 ): Promise<{ id: string; url: string }> {
   const stripe = injected ?? getStripe();
   const back = (result: "success" | "cancel") =>
-    `${origin}/dashboard?checkout=${result}&order=${encodeURIComponent(order.id)}`;
+    `${origin}${returnPath}?checkout=${result}&order=${encodeURIComponent(order.id)}`;
   // Plain concatenation: Stripe substitutes the literal `{CHECKOUT_SESSION_ID}` on redirect, and
   // URL/URLSearchParams would percent-encode the braces and break that.
   const successUrl = back("success") + "&session_id={CHECKOUT_SESSION_ID}";
@@ -288,7 +290,8 @@ async function completedSessionError(
 
 /**
  * Returns a Checkout URL for a `pending` (or `failed`, to retry) order. The stored session is:
- * reused while `open`; never replaced once `complete` (confirmed with Stripe on the spot: `ORDER_NOT_PENDING`
+ * reused while `open` with the requested return page (otherwise expired before replacement);
+ * never replaced once `complete` (confirmed with Stripe on the spot: `ORDER_NOT_PENDING`
  * if that marks it paid, else `PAYMENT_PROCESSING`);
  * replaced when `expired` or missing on Stripe; expired first in any other state. The new session id
  * is stored with a compare-and-swap, so concurrent clicks converge on one session.
@@ -299,10 +302,11 @@ export async function startCheckout(
   orderId: string,
   {
     origin,
+    returnPath,
     client: injected,
     db,
     schedule = inline,
-  }: { origin: string; client?: StripeCheckoutClient; db?: Db; schedule?: Scheduler },
+  }: { origin: string; returnPath?: "/dashboard" | "/sim"; client?: StripeCheckoutClient; db?: Db; schedule?: Scheduler },
 ): Promise<{ url: string; sessionId: string; reused: boolean }> {
   const stripe = injected ?? getStripe();
   const conn = db ?? (await getDb());
@@ -347,7 +351,10 @@ export async function startCheckout(
     );
   }
 
-  if (stored?.status === "open" && stored.url) {
+  // A session's return URLs cannot be changed after creation. A simulator resume of a
+  // dashboard checkout closes that unpaid session before creating one that returns to /sim.
+  const returnMatches = !returnPath || !stored?.success_url || new URL(stored.success_url).pathname === returnPath;
+  if (stored?.status === "open" && stored.url && returnMatches) {
     return { url: stored.url, sessionId: stored.id, reused: true };
   }
   if (stored && stored.status !== "expired" && stored.status !== "complete") {
@@ -363,6 +370,7 @@ export async function startCheckout(
 
   const session = await createCheckoutSessionForOrder(order, {
     origin,
+    returnPath,
     productName: `${context.title} — PingMarket order ${order.id} (offer ${order.offerId})`,
     client: stripe,
   });

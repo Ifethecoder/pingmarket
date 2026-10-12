@@ -68,11 +68,15 @@ export function sellerMovedText(offer: Offer, orderId?: string): string {
  * Hosted Stripe test Checkout URL for an order, or null when Stripe or the public app origin
  * (`APP_URL`, else `NEXT_PUBLIC_APP_URL`) is not configured, or Checkout fails. Never throws.
  */
-export async function checkoutLinkForOrder(orderId: string, db?: Db): Promise<string | null> {
+export async function checkoutLinkForOrder(
+  orderId: string,
+  db?: Db,
+  returnPath: "/dashboard" | "/sim" = "/dashboard",
+): Promise<string | null> {
   const appUrl = process.env.APP_URL?.trim() || process.env.NEXT_PUBLIC_APP_URL?.trim();
   if (!isStripeConfigured() || !appUrl) return null;
   try {
-    const { url } = await startCheckout(orderId, { origin: new URL(appUrl).origin, db });
+    const { url } = await startCheckout(orderId, { origin: new URL(appUrl).origin, returnPath, db });
     return url;
   } catch (err) {
     console.warn(`[sms] no checkout link for order ${orderId}: ${describeError(err)}`);
@@ -100,7 +104,9 @@ export async function notifyOfferChange(
     body = counterText(offer, listing?.title ?? null);
   } else if (change === "accepted") {
     const orderId = extra.orderId ?? (await getOrCreateOrderForOffer(offer.id, conn)).order.id;
-    const checkoutUrl = extra.checkoutUrl !== undefined ? extra.checkoutUrl : await checkoutLinkForOrder(orderId, conn);
+    const checkoutUrl = extra.checkoutUrl !== undefined
+      ? extra.checkoutUrl
+      : await checkoutLinkForOrder(orderId, conn, to.channel === "sim" ? "/sim" : "/dashboard");
     body = acceptedText(offer, orderId, checkoutUrl);
   } else {
     body = declinedText(offer);

@@ -345,7 +345,9 @@ async function handleNegotiation(
   let checkoutUrl: string | null = null;
   if (offer.status === "accepted") {
     orderId = (await getOrCreateOrderForOffer(offer.id, ctx.db)).order.id;
-    if (actorId === offer.buyerId || simCounterpart) checkoutUrl = await checkoutLinkForOrder(orderId, ctx.db);
+    if (actorId === offer.buyerId || simCounterpart) {
+      checkoutUrl = await checkoutLinkForOrder(orderId, ctx.db, ctx.actor.channel === "sim" ? "/sim" : "/dashboard");
+    }
   }
 
   const out: OutboundSms[] = [];

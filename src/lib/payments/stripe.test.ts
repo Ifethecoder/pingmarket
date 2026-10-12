@@ -52,6 +52,7 @@ function fakeStripe(prefix = "cs_test_fake") {
     sessions.set(id, "open");
     const price = params.line_items?.[0]?.price_data;
     details.set(id, {
+      success_url: params.success_url,
       client_reference_id: params.client_reference_id ?? null,
       metadata: (params.metadata as Record<string, string> | undefined) ?? {},
       amount_total: price?.unit_amount ?? null,
@@ -106,6 +107,29 @@ async function pendingOrder(listingId: string, priceCents: number) {
 }
 
 describe("startCheckout", () => {
+  it("replaces an unpaid dashboard session when the buyer resumes from the simulator", async () => {
+    const order = await freshOrder(9500);
+    const fake = fakeStripe("cs_test_changedreturn");
+    const dashboard = await startCheckout(order.id, { origin: ORIGIN, client: fake.client, db });
+    const simulator = await startCheckout(order.id, { origin: ORIGIN, returnPath: "/sim", client: fake.client, db });
+    expect(fake.expire).toHaveBeenCalledWith(dashboard.sessionId);
+    expect(simulator.sessionId).not.toBe(dashboard.sessionId);
+    expect(fake.create.mock.calls[1][0].success_url).toContain(`${ORIGIN}/sim?checkout=success`);
+    const repeated = await startCheckout(order.id, { origin: ORIGIN, returnPath: "/sim", client: fake.client, db });
+    expect(repeated).toMatchObject({ sessionId: simulator.sessionId, reused: true });
+    expect(fake.create).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns simulation purchases to /sim for server-side payment confirmation", async () => {
+    const order = await freshOrder(12000);
+    const fake = fakeStripe("cs_test_simreturn");
+    await startCheckout(order.id, { origin: ORIGIN, returnPath: "/sim", client: fake.client, db });
+    expect(fake.create.mock.calls[0][0]).toMatchObject({
+      success_url: `${ORIGIN}/sim?checkout=success&order=${order.id}&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${ORIGIN}/sim?checkout=cancel&order=${order.id}`,
+    });
+  });
+
   it("creates a hosted test Checkout session for the order and stores its id (still pending)", async () => {
     const order = await pendingOrder("D1", 11000);
     const fake = fakeStripe();

@@ -1,25 +1,7 @@
 import { NextResponse } from "next/server";
-import { OrderError } from "@/lib/orders/service";
+import { appOrigin } from "@/lib/payments/origin";
 import { afterResponse, paymentErrorResponse } from "@/lib/payments/route-errors";
 import { startCheckout } from "@/lib/payments/stripe";
-
-/**
- * Origin for Stripe return URLs. `APP_URL` (server-only, read at runtime) wins. Outside production the
- * request origin is accepted for local dev; in production `APP_URL` is required so a forged Host
- * header cannot turn the success/cancel URLs into an open redirect.
- */
-function appOrigin(req: Request): string {
-  const configured = process.env.APP_URL?.trim();
-  if (configured) {
-    try {
-      return new URL(configured).origin;
-    } catch {
-      throw new OrderError("APP_URL_REQUIRED", "APP_URL is not a valid absolute URL (e.g. https://pingmarket.example.com)");
-    }
-  }
-  if (process.env.NODE_ENV !== "production") return new URL(req.url).origin;
-  throw new OrderError("APP_URL_REQUIRED", "Set APP_URL to the app's public origin to enable checkout in production");
-}
 
 /**
  * POST /api/orders/{id}/checkout → `{ url, sessionId }` for a hosted Stripe test-mode Checkout page.

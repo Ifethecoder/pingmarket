@@ -2,15 +2,17 @@
 
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import type { Marketplace, MarketplaceId, Message } from "@/lib/types";
+import { MARKETPLACE_IDS } from "@/lib/types";
 import { errorMessage, getSimThread, postSimSms, type SimActor } from "../dashboard/api";
 import { formatAbsolute } from "../dashboard/format";
 import { usePolling } from "../dashboard/hooks";
 import { ErrorNote, LiveStatus } from "../dashboard/ui";
+import { BuyPanel, BUYER_MARKETPLACE_STORAGE_KEY } from "./BuyPanel";
 import "./imessage.css";
 
 const QUICK_REPLIES: Record<SimActor, string[]> = {
-  seller: ["HELP", "SELL oak desk, $120, Berkeley. Pickup only.", "SELL brass lamp", "DETAILS D2", "REMOVE D8"],
-  buyer: ["HELP", "SEARCH desk under $150 in Berkeley", "SEARCH office chair", "OFFER D2 80", "DETAILS D2", "AGENT 1"],
+  seller: ["SELL oak desk, $120, Berkeley. Pickup only.", "SELL brass lamp", "DETAILS D2", "REMOVE D8"],
+  buyer: ["SEARCH desk under $150 in Berkeley", "SEARCH office chair", "OFFER D2 80", "DETAILS D2", "AGENT 1"],
 };
 
 const ACTOR_LABEL: Record<SimActor, { title: string; who: string }> = {
@@ -50,25 +52,40 @@ export function Phone({
   actor,
   marketplaces,
   onActivity,
+  refreshToken: activityToken,
 }: {
   actor: SimActor;
   marketplaces: Marketplace[];
   /** Called after this handset sends a text, so sibling panels can refetch at once. */
   onActivity: () => void;
+  refreshToken: number;
 }) {
   const [draft, setDraft] = useState("");
   const [marketplaceId, setMarketplaceId] = useState<MarketplaceId>("furniture");
   const [pending, setPending] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [buyOpen, setBuyOpen] = useState(false);
   // Rows returned by our own POST, shown until a poll catches up so the thread never flickers.
   const [local, setLocal] = useState<Message[]>([]);
   // Bumped after our own send so the thread refetches without waiting for the next poll.
   const [refreshToken, setRefreshToken] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  useEffect(() => {
+    if (actor !== "buyer") return;
+    try {
+      const stored = window.sessionStorage.getItem(BUYER_MARKETPLACE_STORAGE_KEY);
+      if (stored && MARKETPLACE_IDS.includes(stored as MarketplaceId)) {
+        queueMicrotask(() => setMarketplaceId(stored as MarketplaceId));
+      }
+    } catch {
+      // Use the default marketplace if storage is unavailable.
+    }
+  }, [actor]);
+
   const poll = usePolling(() => getSimThread(actor), {
     intervalMs: 2000,
-    refreshToken,
+    refreshToken: refreshToken + activityToken,
     onSuccess: (data) => setLocal((rows) => rows.filter((r) => !data.messages.some((m) => m.id === r.id))),
   });
   const polled = poll.data?.messages ?? [];
@@ -184,8 +201,24 @@ export function Phone({
 
           <Thread actor={actor} messages={messages} pending={pending} loading={poll.loading} error={poll.error} />
 
+          {actor === "buyer" && (
+            <BuyPanel open={buyOpen} marketplaceId={marketplaceId} refreshToken={refreshToken + activityToken} onActivity={onActivity} />
+          )}
+
           {/* Suggestions */}
           <div className="flex gap-1.5 overflow-x-auto px-3 pb-1.5 pt-1 [scrollbar-width:none]">
+            {actor === "buyer" && (
+              <button
+                type="button"
+                disabled={sending}
+                aria-expanded={buyOpen}
+                aria-controls="buyer-purchases"
+                onClick={() => setBuyOpen((open) => !open)}
+                className="shrink-0 rounded-full border border-(--imsg-sent)/45 px-3 py-1 text-[13px] text-(--imsg-sent) transition-colors hover:bg-(--imsg-sent)/10 focus-visible:outline-2 focus-visible:outline-(--imsg-sent) disabled:opacity-40"
+              >
+                Buy
+              </button>
+            )}
             {QUICK_REPLIES[actor].map((q) => (
               <button
                 key={q}
@@ -272,7 +305,7 @@ function Thread({
         <p className="px-6 py-10 text-center text-[13px] leading-relaxed text-(--imsg-meta)">
           Text Message
           <br />
-          Tap a suggestion below or type a command. Try <span className="font-semibold">HELP</span>.
+          Tap a suggestion below or type a command.
         </p>
       )}
       {messages.map((m, i) => {

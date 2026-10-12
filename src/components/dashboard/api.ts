@@ -158,6 +158,13 @@ export const postSimSms = (body: { actor: SimActor; body: string; marketplaceId?
     body: JSON.stringify(body),
   });
 
+/** Reserve a listing for the simulated buyer and open a hosted Stripe Checkout Session. */
+export const postSimBuy = (listingId: string) =>
+  apiFetch<{ order: Order; url: string; sessionId: string }>("/api/sms/simulate/buy", {
+    method: "POST",
+    body: JSON.stringify({ listingId }),
+  });
+
 export interface ConfirmPaymentResponse {
   order: Order;
   confirmed: boolean;
