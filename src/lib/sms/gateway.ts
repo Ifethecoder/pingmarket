@@ -18,13 +18,19 @@ import type { Listing, MarketplaceId, Offer, OfferSource, SearchResponse } from 
 import { clarifyListing, parseSms, type SmsIntent } from "./intent";
 import {
   acceptedText,
+  buyerAcceptedText,
+  buyerDeclinedText,
   checkoutLinkForOrder,
+  counterText,
+  declinedText,
   fitSms,
   MAX_SMS_CHARS,
   money,
-  notifyOfferChange,
+  newOfferText,
+  notifyNewOffer,
+  notifyTransition,
+  sellerMovedText,
   truncate,
-  type OfferChange,
 } from "./notify";
 import { describeError } from "./outbound";
 import type { ListingDraft } from "./ports";
@@ -261,14 +267,17 @@ async function handleOffer(ctx: Ctx, listingCode: string, priceCents: number): P
   if (listing && ctx.counterpart && listing.sellerId === ctx.counterpart.userId) {
     return [
       reply(ctx, `${sent} We'll text you when the seller replies.`),
-      {
-        to: ctx.counterpart.number,
-        body: `New offer ${offer.id} on ${offer.listingId} (${truncate(listing.title, 60)}): ${money(offer.proposedPriceCents)}, asking ${money(listing.priceCents, listing.currency)}. Reply ACCEPT ${offer.id}, COUNTER ${offer.id} <price>, or DECLINE ${offer.id}.`,
-      },
+      { to: ctx.counterpart.number, body: newOfferText(offer, listing) },
     ];
   }
   if (isSim(ctx)) {
     return [reply(ctx, `${sent} This seller is not on the simulated seller phone, so no simulated notification was sent.`)];
+  }
+  // A real phone made the offer: the /sim seller handset still hears about offers on its listings.
+  try {
+    await notifyNewOffer(offer, ctx.db);
+  } catch (err) {
+    console.error(`[sms] new-offer notification for ${offer.id} failed: ${describeError(err)}`);
   }
   return [reply(ctx, `${sent} The seller reviews offers on PingMarket; we'll text you when they respond.`)];
 }
@@ -326,53 +335,59 @@ async function handleNegotiation(
     throw err;
   }
   const { offer, changed, declined } = outcome;
+  const counterpartId = actorId === offer.sellerId ? offer.buyerId : offer.sellerId;
+  // The other /sim handset is texted in this reply batch; any other phone through `notifyTransition`.
+  const simCounterpart = changed && ctx.counterpart?.userId === counterpartId ? ctx.counterpart : undefined;
 
   let orderId: string | undefined;
   let checkoutUrl: string | null = null;
   if (offer.status === "accepted") {
     orderId = (await getOrCreateOrderForOffer(offer.id, ctx.db)).order.id;
-    if (actorId === offer.buyerId) checkoutUrl = await checkoutLinkForOrder(orderId, ctx.db);
+    if (actorId === offer.buyerId || simCounterpart) checkoutUrl = await checkoutLinkForOrder(orderId, ctx.db);
   }
 
   const out: OutboundSms[] = [];
-  if (offer.status === "accepted" && actorId === offer.buyerId) {
+  if (actorId === offer.sellerId) {
+    out.push(reply(ctx, sellerMovedText(offer, orderId)));
+  } else if (offer.status === "accepted") {
     out.push(reply(ctx, acceptedText(offer, orderId!, checkoutUrl)));
   } else {
-    const order = orderId ? ` Order ${orderId} is pending payment.` : "";
-    out.push(reply(ctx, `Offer ${offer.id} is now ${offer.status} at ${money(offer.proposedPriceCents)}.${order}`));
+    out.push(reply(ctx, `Offer ${offer.id} is now ${offer.status} at ${money(offer.proposedPriceCents)}.`));
   }
   if (!changed) return out; // idempotent repeat: nobody else is told again
 
-  const counterpartId = actorId === offer.sellerId ? offer.buyerId : offer.sellerId;
-  if (ctx.counterpart && counterpartId === ctx.counterpart.userId) {
-    const next =
-      offer.status === "countered"
-        ? ` Reply ACCEPT ${offer.id} or DECLINE ${offer.id}.`
-        : offer.status === "accepted"
-          ? " Payment link follows on the dashboard."
-          : "";
-    out.push({
-      to: ctx.counterpart.number,
-      body: `Offer ${offer.id} on ${offer.listingId}: ${offer.status} at ${money(offer.proposedPriceCents)}.${next}`,
-    });
-  } else if (actorId === offer.sellerId && offer.source === "sms" && offer.status !== "open") {
-    // A /sim seller moved a real SMS buyer's offer: text that buyer over Dial.
-    await notifySmsBuyer(ctx, offer, offer.status as OfferChange, orderId);
+  if (simCounterpart) {
+    const body = await counterpartText(ctx, offer, actorId, orderId, checkoutUrl);
+    if (body) out.push({ to: simCounterpart.number, body });
   }
-  // Competing offers this accept declined: their SMS buyers hear about it too.
-  for (const other of declined) {
-    if (other.source === "sms") await notifySmsBuyer(ctx, other, "declined");
-  }
+  // Competing offers this accept declined: the other /sim handset's arrive after the accept, in this batch.
+  const simBuyer = ctx.counterpart;
+  const declinedHere = simBuyer ? declined.filter((o) => o.buyerId === simBuyer.userId) : [];
+  for (const other of declinedHere) out.push({ to: simBuyer!.number, body: declinedText(other) });
+  await notifyTransition(
+    { offer, actorId, declined: declined.filter((o) => !declinedHere.includes(o)), orderId, counterpart: !simCounterpart },
+    ctx.db,
+  );
   return out;
 }
 
-/** Best effort: the transition is committed, so a failed notification is logged, never surfaced. */
-async function notifySmsBuyer(ctx: Ctx, offer: Offer, change: OfferChange, orderId?: string): Promise<void> {
-  try {
-    await notifyOfferChange(offer, change, { orderId }, ctx.db);
-  } catch (err) {
-    console.error(`[sms] notifying the SMS buyer of ${offer.id} failed: ${describeError(err)}`);
+/** What the other /sim handset sees after `actorId` moved `offer` (same wording as a real phone). */
+async function counterpartText(
+  ctx: Ctx,
+  offer: Offer,
+  actorId: string,
+  orderId: string | undefined,
+  checkoutUrl: string | null,
+): Promise<string | null> {
+  if (actorId === offer.sellerId) {
+    if (offer.status === "countered") return counterText(offer, (await getListing(offer.listingId, ctx.db))?.title ?? null);
+    if (offer.status === "accepted") return acceptedText(offer, orderId!, checkoutUrl);
+    if (offer.status === "declined") return declinedText(offer);
+    return null;
   }
+  if (offer.status === "accepted") return buyerAcceptedText(offer, orderId!);
+  if (offer.status === "declined") return buyerDeclinedText(offer);
+  return null;
 }
 
 async function handleStop(ctx: Ctx): Promise<OutboundSms[]> {

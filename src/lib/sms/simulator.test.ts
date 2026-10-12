@@ -4,7 +4,10 @@ import { createTestDb } from "../db/testing";
 import { listTraceEvents } from "../events/service";
 import { getListing } from "../listings/service";
 import { createOffer, getOffer, listOffers } from "../offers/service";
+import { acceptOffer } from "../negotiation/db-service";
 import { listOrders } from "../orders/service";
+import { applyPaidCheckoutSession } from "../payments/stripe";
+import { notifyTransition } from "./notify";
 import completedFixture from "../darwin/__fixtures__/completed.json";
 import {
   getSimHandset,
@@ -171,7 +174,7 @@ describe("simulateSms", () => {
 
     const accepted = await simulateSms({ actor: "buyer", body: `ACCEPT ${offerId}` }, { db });
     expect(accepted.outbound[0].body).toMatch(new RegExp(`^Accepted ${offerId} at \\$55\\.00 for D6\\. Order ORD\\d+ is pending payment\\.`));
-    expect(accepted.outbound[1].body).toMatch(/accepted at \$55\.00/);
+    expect(accepted.outbound[1].body).toMatch(new RegExp(`^The buyer accepted your counter ${offerId}: \\$55\\.00 for D6\\. Order ORD\\d+`));
     expect((await getOffer(offerId, db))?.status).toBe("accepted");
     expect((await getOffer(competing.id, db))?.status).toBe("declined");
     expect((await getListing("D6", db))?.status).toBe("reserved");
@@ -201,5 +204,108 @@ describe("simulateSms", () => {
   it("unknown text gets a HELP hint and router failures never leak", async () => {
     const res = await simulateSms({ actor: "buyer", body: "hello there" }, { db });
     expect(res.outbound[0].body).toMatch(/Reply HELP/);
+  });
+});
+
+describe("both handsets see the whole transaction", () => {
+  beforeEach(() => vi.stubEnv("STRIPE_SECRET_KEY", ""));
+
+  const bodiesSince = async (actor: "buyer" | "seller", since: number) =>
+    (await listSimThread(actor, db)).slice(since).map((m) => m.body);
+
+  async function newListing(title: string, price: number): Promise<string> {
+    const res = await simulateSms({ actor: "seller", body: `SELL ${title}, $${price}, Berkeley` }, { db });
+    return /Listed (D\d+)/.exec(res.outbound[0].body)![1];
+  }
+
+  it("offer → counter → accept → payment: each phone gets its side's texts, in order", async () => {
+    const listingId = await newListing("walnut bookshelf", 200);
+    const seller0 = (await listSimThread("seller", db)).length;
+    const buyer0 = (await listSimThread("buyer", db)).length;
+
+    const offered = await simulateSms({ actor: "buyer", body: `OFFER ${listingId} 150` }, { db });
+    const offerId = /Offer (O\d+) sent/.exec(offered.outbound[0].body)![1];
+    await simulateSms({ actor: "seller", body: `COUNTER ${offerId} 180` }, { db });
+    await simulateSms({ actor: "buyer", body: `ACCEPT ${offerId}` }, { db });
+    const order = (await listOrders(db)).find((o) => o.offerId === offerId)!;
+
+    const result = await applyPaidCheckoutSession(
+      {
+        id: "cs_test_sim_flow",
+        livemode: false,
+        client_reference_id: order.id,
+        metadata: { orderId: order.id, offerId },
+        payment_status: "paid",
+        amount_total: 18000,
+        currency: "usd",
+      },
+      { db },
+    );
+    expect(result.outcome).toBe("paid");
+
+    const buyer = await bodiesSince("buyer", buyer0);
+    expect(buyer).toEqual([
+      `OFFER ${listingId} 150`,
+      expect.stringMatching(new RegExp(`^Offer ${offerId} sent: \\$150\\.00 for ${listingId}`)),
+      `Counter ${offerId}: $180.00 for ${listingId} (walnut bookshelf). Reply ACCEPT ${offerId} or DECLINE ${offerId}.`,
+      `ACCEPT ${offerId}`,
+      `Accepted ${offerId} at $180.00 for ${listingId}. Order ${order.id} is pending payment. Pay on the PingMarket dashboard.`,
+      `Payment received: $180.00 for ${listingId} (walnut bookshelf). Order ${order.id} is confirmed and the seller has been told.`,
+    ]);
+    const seller = await bodiesSince("seller", seller0);
+    expect(seller).toEqual([
+      expect.stringMatching(new RegExp(`^New offer ${offerId} on ${listingId} \\(walnut bookshelf\\): \\$150\\.00, asking \\$200\\.00`)),
+      `COUNTER ${offerId} 180`,
+      `Offer ${offerId} is now countered at $180.00.`,
+      `The buyer accepted your counter ${offerId}: $180.00 for ${listingId}. Order ${order.id} is pending payment; we'll text you when they pay.`,
+      `Sold! The buyer paid $180.00 for ${listingId} (walnut bookshelf), order ${order.id}. Your payout is pending.`,
+    ]);
+
+    // A repeated confirmation (webhook + redirect) texts nobody again.
+    const again = await applyPaidCheckoutSession(
+      { id: "cs_test_sim_flow", livemode: false, client_reference_id: order.id, metadata: {}, payment_status: "paid", amount_total: 18000, currency: "usd" },
+      { db },
+    );
+    expect(again.outcome).toBe("paid");
+    expect(await bodiesSince("buyer", buyer0)).toHaveLength(buyer.length);
+    expect(await bodiesSince("seller", seller0)).toHaveLength(seller.length);
+  });
+
+  it("seller ACCEPT on the phone sends the buyer the accepted text and declines the buyer's competing offer", async () => {
+    const listingId = await newListing("teak stool", 60);
+    const first = await simulateSms({ actor: "buyer", body: `OFFER ${listingId} 40` }, { db });
+    const losing = /Offer (O\d+) sent/.exec(first.outbound[0].body)![1];
+    const second = await simulateSms({ actor: "buyer", body: `OFFER ${listingId} 50` }, { db });
+    const winning = /Offer (O\d+) sent/.exec(second.outbound[0].body)![1];
+    const buyer0 = (await listSimThread("buyer", db)).length;
+
+    const res = await simulateSms({ actor: "seller", body: `ACCEPT ${winning}` }, { db });
+    expect(res.outbound[0].body).toMatch(new RegExp(`^Offer ${winning} is now accepted at \\$50\\.00\\. Order ORD\\d+ is pending payment; we'll text you when the buyer pays\\.`));
+    expect(await bodiesSince("buyer", buyer0)).toEqual([
+      expect.stringMatching(new RegExp(`^Accepted ${winning} at \\$50\\.00 for ${listingId}\\. Order ORD\\d+ is pending payment\\.`)),
+      `Offer ${losing} on ${listingId} was declined.`,
+    ]);
+  });
+
+  it("dashboard moves reach the handsets too", async () => {
+    const listingId = await newListing("cane chair", 90);
+    const buyer = await getSimHandset("buyer", db);
+    const offer = await createOffer({ listingId, priceCents: 7000 }, db);
+    expect(offer.buyerId).toBe(buyer.userId);
+    const buyer0 = (await listSimThread("buyer", db)).length;
+
+    const outcome = await acceptOffer({ offerId: offer.id, actorId: offer.sellerId }, db);
+    await notifyTransition({ offer: outcome.offer, actorId: offer.sellerId, declined: outcome.declined }, db);
+    const [text] = await bodiesSince("buyer", buyer0);
+    expect(text).toMatch(new RegExp(`^Accepted ${offer.id} at \\$70\\.00 for ${listingId}\\. Order ORD\\d+ is pending payment\\.`));
+  });
+
+  it("the buyer declining a counter tells the seller phone", async () => {
+    const listingId = await newListing("rattan lamp", 30);
+    const offered = await simulateSms({ actor: "buyer", body: `OFFER ${listingId} 20` }, { db });
+    const offerId = /Offer (O\d+) sent/.exec(offered.outbound[0].body)![1];
+    await simulateSms({ actor: "seller", body: `COUNTER ${offerId} 25` }, { db });
+    const res = await simulateSms({ actor: "buyer", body: `DECLINE ${offerId}` }, { db });
+    expect(res.outbound[1].body).toBe(`The buyer declined your counter ${offerId} on ${listingId}. ${listingId} is still listed.`);
   });
 });

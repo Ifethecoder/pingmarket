@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Offer, OfferStatus, Order } from "@/lib/types";
-import { acceptOffer, ApiError, counterOffer, declineOffer, errorMessage, getOffers, getOrders, postCheckout, postConfirm, postOrder } from "./api";
+import { acceptOffer, ApiError, counterOffer, declineOffer, errorMessage, getOffers, getOrders, postCheckout, postConfirm, postOrder, postPayout } from "./api";
 import { formatCents } from "./format";
 import { usePolling } from "./hooks";
 import { useToast } from "./Toasts";
@@ -342,6 +342,7 @@ function OrderPayment({
         <span className="text-muted">
           Order <span className="font-mono">{order.id}</span> · {formatCents(order.amountCents)} via Stripe test checkout
         </span>
+        <SellerPayout order={order} onChanged={onChanged} />
       </div>
     );
   }
@@ -408,4 +409,64 @@ function OrderPayment({
       )}
     </div>
   );
+}
+
+/** Seller side of a paid order: the Stripe Connect test transfer to the seller's connected account. */
+function SellerPayout({ order, onChanged }: { order: Order; onChanged: () => void }) {
+  const [retrying, setRetrying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function retry() {
+    setRetrying(true);
+    setError(null);
+    try {
+      const result = await postPayout(order.id);
+      if (result.outcome === "failed" || result.outcome === "not_configured") setError(result.error ?? result.outcome);
+      onChanged();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setRetrying(false);
+    }
+  }
+
+  if (order.payoutStatus === "paid") {
+    return (
+      <Chip tone="success" title={order.stripeTransferId ?? undefined}>
+        Seller paid {formatCents(order.payoutAmountCents ?? 0, order.payoutCurrency ?? "USD")}
+      </Chip>
+    );
+  }
+  if (order.payoutStatus === "not_configured") {
+    return (
+      <span role="status" className="text-[11px] text-muted" title={order.payoutError ?? undefined}>
+        Seller payout: enable Stripe Connect
+      </span>
+    );
+  }
+  if (order.payoutStatus === "failed") {
+    return (
+      <>
+        <Chip tone="danger" title={order.payoutError ?? undefined}>
+          Seller payout failed
+        </Chip>
+        <button
+          type="button"
+          onClick={() => void retry()}
+          disabled={retrying}
+          className={buttonClass.secondary}
+          aria-label={`Retry the seller payout for order ${order.id}`}
+        >
+          {retrying && <Spinner />}
+          Retry payout
+        </button>
+        {error && (
+          <p role="alert" className="basis-full font-mono text-[11px] text-danger">
+            Payout error: {error}
+          </p>
+        )}
+      </>
+    );
+  }
+  return <span className="text-[11px] text-muted">Seller payout pending</span>;
 }

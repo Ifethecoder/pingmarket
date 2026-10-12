@@ -4,7 +4,7 @@
  */
 import { desc, eq } from "drizzle-orm";
 import { getDb, type Db } from "../db";
-import { agentSearches, listings, marketplaces, messages, offers, orders } from "../db/schema";
+import { agentSearches, listings, marketplaces, messages, offers, orders, users } from "../db/schema";
 import type { TraceEvent } from "./types";
 
 function truncate(s: string, max: number): string {
@@ -16,9 +16,11 @@ export function maskPhone(phone: string): string {
   return digits.length >= 4 ? `…${digits.slice(-4)}` : phone;
 }
 
+/** Minor units -> money; zero-decimal currencies (JPY, KRW, …) are not divided by 100. */
 export function formatMoney(cents: number, currency = "USD"): string {
   try {
-    return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(cents / 100);
+    const fmt = new Intl.NumberFormat("en-US", { style: "currency", currency: currency.toUpperCase() });
+    return fmt.format(cents / 10 ** (fmt.resolvedOptions().maximumFractionDigits ?? 2));
   } catch {
     // Invalid currency code in the row: never let one bad listing break the trace feed.
     return `$${(cents / 100).toFixed(2)}`;
@@ -38,10 +40,18 @@ export async function listTraceEvents(limit = 50, db?: Db): Promise<TraceEvent[]
     conn.select().from(agentSearches).orderBy(desc(agentSearches.createdAt)).limit(limit),
     conn.select().from(offers).orderBy(desc(offers.updatedAt)).limit(limit),
     conn
-      .select({ order: orders, listingId: listings.id, listingStatus: listings.status, listingUpdatedAt: listings.updatedAt })
+      .select({
+        order: orders,
+        listingId: listings.id,
+        listingStatus: listings.status,
+        listingUpdatedAt: listings.updatedAt,
+        sellerId: offers.sellerId,
+        sellerAccountId: users.stripeAccountId,
+      })
       .from(orders)
       .leftJoin(offers, eq(orders.offerId, offers.id))
       .leftJoin(listings, eq(offers.listingId, listings.id))
+      .leftJoin(users, eq(offers.sellerId, users.id))
       .orderBy(desc(orders.createdAt))
       .limit(limit),
   ]);
@@ -115,40 +125,70 @@ export async function listTraceEvents(limit = 50, db?: Db): Promise<TraceEvent[]
         },
       }),
     ),
-    ...orderRows.flatMap(({ order: o, listingId, listingStatus, listingUpdatedAt }): TraceEvent[] => {
-      const detail = {
-        orderId: o.id,
-        offerId: o.offerId,
-        listingId,
-        amountCents: o.amountCents,
-        paymentStatus: o.paymentStatus,
-        stripeCheckoutSessionId: o.stripeCheckoutSessionId,
-      };
-      const created: TraceEvent = {
-        id: `order:${o.id}`,
-        at: o.createdAt.toISOString(),
-        kind: "order_created",
-        summary: `Order ${o.id} created for offer ${o.offerId} · ${formatMoney(o.amountCents)} pending`,
-        detail,
-      };
-      if (o.paymentStatus === "pending") return [created];
-      // orders has no updated_at; a paid order marks its listing `sold` in the same transaction,
-      // so the listing's updated_at is the payment time.
-      const paidAt = o.paymentStatus === "paid" && listingStatus === "sold" && listingUpdatedAt ? listingUpdatedAt : o.createdAt;
-      return [
-        created,
-        {
-          id: `payment:${o.id}`,
-          at: paidAt.toISOString(),
-          kind: "payment",
-          summary:
-            o.paymentStatus === "paid"
-              ? `Order ${o.id} paid via Stripe test checkout · ${formatMoney(o.amountCents)}`
-              : `Order ${o.id} payment failed (Stripe test checkout)`,
+    ...orderRows.flatMap(
+      ({ order: o, listingId, listingStatus, listingUpdatedAt, sellerId, sellerAccountId }): TraceEvent[] => {
+        const detail = {
+          orderId: o.id,
+          offerId: o.offerId,
+          listingId,
+          amountCents: o.amountCents,
+          paymentStatus: o.paymentStatus,
+          stripeCheckoutSessionId: o.stripeCheckoutSessionId,
+        };
+        const created: TraceEvent = {
+          id: `order:${o.id}`,
+          at: o.createdAt.toISOString(),
+          kind: "order_created",
+          summary: `Order ${o.id} created for offer ${o.offerId} · ${formatMoney(o.amountCents)} pending`,
           detail,
-        },
-      ];
-    }),
+        };
+        if (o.paymentStatus === "pending") return [created];
+        // `paid_at` is set with the payment; older rows fall back to the sold listing's updated_at
+        // (set in the same transaction), then to the order's creation time.
+        const paidAt =
+          o.paidAt ??
+          (o.paymentStatus === "paid" && listingStatus === "sold" && listingUpdatedAt ? listingUpdatedAt : o.createdAt);
+        const events: TraceEvent[] = [
+          created,
+          {
+            id: `payment:${o.id}`,
+            at: paidAt.toISOString(),
+            kind: "payment",
+            summary:
+              o.paymentStatus === "paid"
+                ? `Order ${o.id} paid via Stripe test checkout · ${formatMoney(o.amountCents)}`
+                : `Order ${o.id} payment failed (Stripe test checkout)`,
+            detail,
+          },
+        ];
+        if (o.payoutStatus === "not_started") return events;
+        const account = sellerAccountId ? ` (acct_…${sellerAccountId.slice(-4)})` : "";
+        const summary =
+          o.payoutStatus === "paid"
+            ? `Seller payout ${formatMoney(o.payoutAmountCents ?? 0, o.payoutCurrency ?? "USD")} → ${sellerId ?? "seller"}${account} for ${o.id}`
+            : o.payoutStatus === "failed"
+              ? `Seller payout failed for ${o.id}: ${truncate(o.payoutError ?? "unknown error", 120)}`
+              : `Seller payout not configured for ${o.id} (enable Stripe Connect)`;
+        events.push({
+          id: `payout:${o.id}`,
+          at: (o.payoutAt ?? paidAt).toISOString(),
+          kind: "payout",
+          summary,
+          detail: {
+            orderId: o.id,
+            sellerId,
+            stripeAccountId: sellerAccountId,
+            payoutStatus: o.payoutStatus,
+            payoutAmountCents: o.payoutAmountCents,
+            platformFeeCents: o.platformFeeCents,
+            payoutCurrency: o.payoutCurrency,
+            stripeTransferId: o.stripeTransferId,
+            payoutError: o.payoutError,
+          },
+        });
+        return events;
+      },
+    ),
   ];
 
   return events

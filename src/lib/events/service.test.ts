@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "../db";
-import { messages, offers } from "../db/schema";
+import { messages, offers, orders, users } from "../db/schema";
 import { createTestDb } from "../db/testing";
 import { createOffer } from "../offers/service";
 import { getOrCreateOrderForOffer, markOrderPaid } from "../orders/service";
@@ -28,6 +28,7 @@ describe("listTraceEvents", () => {
   it("formats helpers", () => {
     expect(maskPhone("+1 (555) 000-0002")).toBe("…0002");
     expect(formatMoney(120000)).toBe("$1,200.00");
+    expect(formatMoney(16_489, "jpy")).toBe("¥16,489"); // zero-decimal currency: not divided by 100
     expect(formatMoney(1250, "12$")).toBe("$12.50"); // invalid currency falls back instead of throwing
   });
 
@@ -80,5 +81,34 @@ describe("listTraceEvents orders", () => {
     expect(events.findIndex((e) => e.kind === "payment")).toBeLessThan(
       events.findIndex((e) => e.kind === "order_created"),
     );
+    expect(events.some((e) => e.kind === "payout")).toBe(false);
+
+    // Seller payout outcomes (written by src/lib/payments/payouts.ts), in the settlement currency.
+    const sellerId = offer.sellerId;
+    await orderDb.update(users).set({ stripeAccountId: "acct_1TestSellerAbcd" }).where(eq(users.id, sellerId));
+    await orderDb
+      .update(orders)
+      .set({ payoutStatus: "not_configured", payoutError: "Stripe Connect not enabled", payoutAt: new Date() })
+      .where(eq(orders.id, order.id));
+    events = await listTraceEvents(50, orderDb);
+    expect(events.find((e) => e.kind === "payout")?.summary).toBe(
+      `Seller payout not configured for ${order.id} (enable Stripe Connect)`,
+    );
+    await orderDb
+      .update(orders)
+      .set({ payoutStatus: "failed", payoutError: "invalid_request_error:balance_insufficient Insufficient funds" })
+      .where(eq(orders.id, order.id));
+    events = await listTraceEvents(50, orderDb);
+    expect(events.find((e) => e.kind === "payout")?.summary).toBe(
+      `Seller payout failed for ${order.id}: invalid_request_error:balance_insufficient Insufficient funds`,
+    );
+    await orderDb
+      .update(orders)
+      .set({ payoutStatus: "paid", payoutAmountCents: 16_489, payoutCurrency: "jpy", stripeTransferId: "tr_1" })
+      .where(eq(orders.id, order.id));
+    events = await listTraceEvents(50, orderDb);
+    const payout = events.find((e) => e.kind === "payout");
+    expect(payout?.summary).toBe(`Seller payout ¥16,489 → ${sellerId} (acct_…Abcd) for ${order.id}`);
+    expect(payout?.detail).toMatchObject({ stripeTransferId: "tr_1", payoutCurrency: "jpy" });
   }, 30_000); // boots its own PGlite in the test body
 });

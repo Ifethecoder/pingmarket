@@ -34,24 +34,6 @@ export function SmsSimulator() {
               <h1 className="font-mono text-[11px] uppercase tracking-[0.14em] text-muted">Demo · simulated SMS</h1>
             </div>
           </div>
-          <div
-            role="note"
-            aria-label="Demo honesty notice"
-            className="flex items-start gap-2.5 rounded-md border border-warning/45 bg-warning/10 px-3 py-2 text-[13px] leading-snug"
-          >
-            <span
-              aria-hidden
-              className="mt-px shrink-0 rounded-sm bg-warning px-1.5 py-px font-mono text-[10px] font-bold tracking-wider text-surface"
-            >
-              SIMULATED
-            </span>
-            <p>
-              <strong className="font-semibold">Nothing on this page touches Dial.</strong> Texts go straight to the same SMS
-              command parser and marketplace services the real webhook will use, and land in the trace labelled{" "}
-              <code className="font-mono">SIM</code>. The seller phone is the seeded <code className="font-mono">u_seller_2</code>,
-              not the real Dial seller. ACCEPT / COUNTER / DECLINE wait on the negotiation service.
-            </p>
-          </div>
         </div>
       </header>
 

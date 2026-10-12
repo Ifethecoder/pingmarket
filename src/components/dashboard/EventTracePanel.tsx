@@ -15,6 +15,7 @@ const kindStyle: Record<TraceEventKind, { tone: Tone; label: string }> = {
   offer: { tone: "warning", label: "offer" },
   order_created: { tone: "native", label: "order" },
   payment: { tone: "success", label: "payment" },
+  payout: { tone: "success", label: "payout" },
 };
 
 /** Which SMS path a trace row took: real Dial phone vs the /sim demo handsets. */

@@ -3,6 +3,8 @@ import { z } from "zod";
 import { createOfferRequestSchema } from "@/lib/contracts";
 import { internalError, jsonError, parseJsonBody, validationError } from "@/lib/http";
 import { createOffer, listOffers, OfferError, type OfferErrorCode } from "@/lib/offers/service";
+import { notifyNewOffer } from "@/lib/sms/notify";
+import { describeError } from "@/lib/sms/outbound";
 import type { OfferStatus } from "@/lib/types";
 
 const OFFER_STATUSES = ["open", "countered", "accepted", "declined", "expired"] as const satisfies readonly OfferStatus[];
@@ -43,7 +45,10 @@ export async function POST(req: Request) {
   try {
     // Always the simulated web buyer: HTTP callers can never pick buyerId/source.
     const { listingId, priceCents } = parsed.data;
-    return NextResponse.json({ offer: await createOffer({ listingId, priceCents }) }, { status: 201 });
+    const offer = await createOffer({ listingId, priceCents });
+    // The /sim seller handset hears about offers on its listings; a failed text never fails the offer.
+    await notifyNewOffer(offer).catch((err) => console.error(`[api] POST /api/offers: seller notification failed: ${describeError(err)}`));
+    return NextResponse.json({ offer }, { status: 201 });
   } catch (err) {
     if (err instanceof OfferError) {
       return jsonError(OFFER_ERROR_STATUS[err.code], err.message, { code: err.code });

@@ -20,7 +20,9 @@
     "dial:numbers": "node --env-file=.env.local --import tsx scripts/dial/doctor.ts --numbers",
     "dial:serve": "node --env-file=.env.local --import tsx scripts/dial/server.ts",
     "dial:send-test": "node --env-file=.env.local --import tsx scripts/dial/send-test.ts",
-    "stripe:listen": "stripe listen --forward-to localhost:3000/api/stripe/webhook"
+    "stripe:listen": "stripe listen --forward-to localhost:3000/api/stripe/webhook",
+    "stripe:sellers": "node --env-file=.env.local --import tsx scripts/stripe-sellers.ts",
+    "stripe:samples": "node --env-file=.env.local --import tsx scripts/stripe-samples.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",

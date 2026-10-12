@@ -177,3 +177,14 @@ export const postDarwinAct = (body: { searchId: string; agentId: string; capabil
 
 export const getDarwinAct = (actRequestId: string) =>
   apiFetch<DarwinActView>(`/api/darwin/act/${encodeURIComponent(actRequestId)}`);
+
+export interface PayoutResponse {
+  order: Order;
+  outcome: "paid" | "already_paid" | "not_configured" | "failed";
+  transferId: string | null;
+  error?: string;
+}
+
+/** Retries the seller payout (Stripe Connect test transfer) for a paid order. */
+export const postPayout = (orderId: string) =>
+  apiFetch<PayoutResponse>(`/api/orders/${encodeURIComponent(orderId)}/payout`, { method: "POST" });

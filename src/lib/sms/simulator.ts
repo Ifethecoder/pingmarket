@@ -5,42 +5,30 @@
  * each inbound text and every reply is written to `messages` with a `sim_` Dial event id so the trace
  * feed can label it, and simulated rows never use a real Dial number.
  *
- * Identity is fixed, not inferred from the text:
- *   seller → seeded `u_seller_2` (NOT `u_seller_demo`, the dashboard demo seller)
- *   buyer  → seeded `u_web_buyer` (offers keep `source: "web_simulated"`)
+ * Identity is fixed, not inferred from the text (see `./sim-handsets.ts`). Texts to these handsets from
+ * outside the simulator (dashboard transitions, payments, payouts) arrive through `./deliver.ts`.
  *
  * Negotiation (ACCEPT / COUNTER / DECLINE) defaults to the drizzle service in
  * `../negotiation/db-service.ts`; pass `negotiation` to substitute another `NegotiationPort`.
  */
 import { and, asc, eq, like, or } from "drizzle-orm";
 import { getDb, type Db } from "../db";
-import { newUuidId } from "../db/ids";
-import { messages, users } from "../db/schema";
-import { WEB_BUYER_ID } from "../offers/service";
+import { messages } from "../db/schema";
 import type { RunSearchOptions } from "../search/service";
 import type { MarketplaceId, Message } from "../types";
 import { createSessionStore, routeSms, type NegotiationPort, type OutboundSms, type SmsSessionStore } from "./gateway";
 import { toMessage } from "./outbound";
+import { getSimHandset, recordSimText, SIM_EVENT_PREFIX, type SimActor } from "./sim-handsets";
 
 export type { NegotiationPort } from "./gateway";
-export const SIM_ACTORS = ["seller", "buyer"] as const;
-export type SimActor = (typeof SIM_ACTORS)[number];
-
-/** Prefix of `messages.dial_event_id` for simulated rows; the trace feed labels these `SIM`. */
-export const SIM_EVENT_PREFIX = "sim_";
-/** Fake PingMarket service number used only by the simulator (never `DIAL_SERVICE_NUMBER`). */
-export const SIM_SERVICE_NUMBER = "+15550000001";
-
-const SIM_USERS: Record<SimActor, { userId: string; fallbackNumber: string }> = {
-  seller: { userId: "u_seller_2", fallbackNumber: "+15550000003" },
-  buyer: { userId: WEB_BUYER_ID, fallbackNumber: "+15550000010" },
-};
-
-export interface SimHandset {
-  actor: SimActor;
-  userId: string;
-  number: string;
-}
+export {
+  getSimHandset,
+  SIM_ACTORS,
+  SIM_EVENT_PREFIX,
+  SIM_SERVICE_NUMBER,
+  type SimActor,
+  type SimHandset,
+} from "./sim-handsets";
 
 export interface SimulateSmsInput {
   actor: SimActor;
@@ -73,13 +61,6 @@ export function resetSimSessions(): void {
   sessions.clear();
 }
 
-export async function getSimHandset(actor: SimActor, db?: Db): Promise<SimHandset> {
-  const conn = db ?? (await getDb());
-  const { userId, fallbackNumber } = SIM_USERS[actor];
-  const [row] = await conn.select({ phone: users.phone }).from(users).where(eq(users.id, userId)).limit(1);
-  return { actor, userId, number: row?.phone ?? fallbackNumber };
-}
-
 /** Oldest first: every simulated message sent from or to this handset. */
 export async function listSimThread(actor: SimActor, db?: Db, limit = 200): Promise<Message[]> {
   const conn = db ?? (await getDb());
@@ -109,17 +90,7 @@ export async function simulateSms(input: SimulateSmsInput, opts: SimulateSmsOpti
     getSimHandset(input.actor, db),
     getSimHandset(input.actor === "seller" ? "buyer" : "seller", db),
   ]);
-  const [inboundRow] = await db
-    .insert(messages)
-    .values({
-      id: newUuidId("msg"),
-      dialEventId: newUuidId(SIM_EVENT_PREFIX.slice(0, -1)),
-      fromNumber: handset.number,
-      toNumber: SIM_SERVICE_NUMBER,
-      body: input.body,
-      direction: "inbound",
-    })
-    .returning();
+  const inbound = await recordSimText({ handsetNumber: handset.number, body: input.body, direction: "inbound" }, db);
 
   let outbound: OutboundSms[];
   try {
@@ -145,18 +116,7 @@ export async function simulateSms(input: SimulateSmsInput, opts: SimulateSmsOpti
 
   const outboundRows: Message[] = [];
   for (const o of outbound) {
-    const [row] = await db
-      .insert(messages)
-      .values({
-        id: newUuidId("msg"),
-        dialEventId: newUuidId(SIM_EVENT_PREFIX.slice(0, -1)),
-        fromNumber: SIM_SERVICE_NUMBER,
-        toNumber: o.to,
-        body: o.body,
-        direction: "outbound",
-      })
-      .returning();
-    outboundRows.push(toMessage(row));
+    outboundRows.push(await recordSimText({ handsetNumber: o.to, body: o.body, direction: "outbound" }, db));
   }
-  return { inbound: toMessage(inboundRow), outbound: outboundRows };
+  return { inbound, outbound: outboundRows };
 }

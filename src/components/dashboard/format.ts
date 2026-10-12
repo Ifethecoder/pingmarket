@@ -2,8 +2,12 @@ import type { Marketplace, MarketplaceId } from "@/lib/types";
 
 const moneyFormatters = new Map<string, Intl.NumberFormat>();
 
-/** 120000 -> "$1,200.00" */
+/**
+ * Minor units -> money: (120000) -> "$1,200.00", (4880, "jpy") -> "¥4,880". The divisor follows the
+ * currency's minor unit (zero-decimal currencies like JPY/KRW are not divided by 100).
+ */
 export function formatCents(cents: number, currency = "USD"): string {
+  currency = currency.toUpperCase();
   let fmt = moneyFormatters.get(currency);
   if (!fmt) {
     try {
@@ -13,7 +17,7 @@ export function formatCents(cents: number, currency = "USD"): string {
     }
     moneyFormatters.set(currency, fmt);
   }
-  return fmt.format(cents / 100);
+  return fmt.format(cents / 10 ** (fmt.resolvedOptions().maximumFractionDigits ?? 2));
 }
 
 const absoluteFormatter = new Intl.DateTimeFormat("en-US", {

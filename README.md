@@ -35,6 +35,7 @@ npm run db:migrate && npm run db:seed
 | `npm run db:generate` | Regenerate SQL migrations from `src/lib/db/schema.ts` |
 | `npm run db:migrate` / `db:seed` | Apply migrations / seed an external Postgres |
 | `npm run stripe:listen` | Forward Stripe test webhooks to `localhost:3000/api/stripe/webhook` (needs the Stripe CLI) |
+| `npm run stripe:sellers` | Create/reuse Stripe Connect test accounts for sellers (`-- --payout-pending` also retries seller payouts); stop `npm run dev` first or use `POST /api/stripe/sellers` |
 
 ## Layout (Developer B modules)
 
@@ -156,7 +157,8 @@ One pending order → hosted Stripe **test-mode (sandbox)** Checkout → server 
 - Env: `STRIPE_SECRET_KEY` (`sk_test_…` only; live keys are refused); `APP_URL` for the return URLs (optional in dev, required in production); optional `STRIPE_WEBHOOK_SECRET` (`whsec_…`, from `npm run stripe:listen`) for the webhook backstop.
 - API: `GET /api/orders` → `{ orders }`; `POST /api/orders { offerId }` → `{ order }` (201 created / 200 existing, accepted offers only); `POST /api/orders/{id}/checkout` → `{ url, sessionId }` (503 `STRIPE_NOT_CONFIGURED` / `APP_URL_REQUIRED`; 409 `ORDER_NOT_PENDING`, `PAYMENT_PROCESSING`, `LISTING_UNAVAILABLE`; 400 `STRIPE_INVALID_REQUEST`; 502 `STRIPE_ERROR`); `POST /api/orders/{id}/confirm { sessionId? }` → `{ order, confirmed, sessionStatus, paymentStatus }`; optional `POST /api/stripe/webhook`.
 - **An order is marked `paid` only after the server has a Checkout Session from Stripe itself** (retrieved with the secret key on return from Checkout / on demand, or in a signed webhook) that is test mode, for this order, `payment_status = "paid"`, with the order's amount in `usd`. The listing is marked `sold` in the same transaction. Creating the link or the `?checkout=success` URL alone never marks anything paid. Repeats are no-ops. A `failed` order can be retried from the dashboard.
-- Card details stay on Stripe's hosted page. No Connect, no payouts.
+- **Seller payouts (Stripe Connect, test mode):** every paid order also makes a Connect transfer, funded by the order's own charge (`source_transaction`, `transfer_group` = order id), to the seller's Custom test connected account. It is created automatically in the platform's country (US and JP test data). It is paid in the platform's settlement currency (e.g. JPY), minus `PLATFORM_FEE_BPS`. Retry with `POST /api/orders/{id}/payout`; provision accounts with `POST /api/stripe/sellers` or `npm run stripe:sellers`. Connect must be enabled in the sandbox; until then payouts show `not_configured` and the payment is unaffected. No bank payouts or live settlement.
+- Card details stay on Stripe's hosted page.
 
 ## Darwin Search notes
 

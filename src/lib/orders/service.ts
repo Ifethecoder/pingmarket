@@ -14,6 +14,7 @@ export type OrderErrorCode =
   | "OFFER_NOT_ACCEPTED"
   | "ORDER_NOT_FOUND"
   | "ORDER_NOT_PENDING"
+  | "ORDER_NOT_PAID"
   | "LISTING_UNAVAILABLE"
   | "PAYMENT_PROCESSING"
   | "SESSION_MISMATCH"
@@ -27,6 +28,7 @@ export const ORDER_ERROR_STATUS: Record<OrderErrorCode, number> = {
   ORDER_NOT_FOUND: 404,
   OFFER_NOT_ACCEPTED: 409,
   ORDER_NOT_PENDING: 409,
+  ORDER_NOT_PAID: 409,
   LISTING_UNAVAILABLE: 409,
   PAYMENT_PROCESSING: 409,
   SESSION_MISMATCH: 409,
@@ -54,6 +56,15 @@ export function toOrder(row: OrderRow): Order {
     amountCents: row.amountCents,
     paymentStatus: row.paymentStatus,
     stripeCheckoutSessionId: row.stripeCheckoutSessionId,
+    paidAt: row.paidAt ? row.paidAt.toISOString() : null,
+    stripePaymentIntentId: row.stripePaymentIntentId,
+    payoutStatus: row.payoutStatus,
+    stripeTransferId: row.stripeTransferId,
+    payoutAmountCents: row.payoutAmountCents,
+    platformFeeCents: row.platformFeeCents,
+    payoutCurrency: row.payoutCurrency,
+    payoutError: row.payoutError,
+    payoutAt: row.payoutAt ? row.payoutAt.toISOString() : null,
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -166,7 +177,7 @@ export async function markOrderPaid(
 
     const [updated] = await tx
       .update(orders)
-      .set({ paymentStatus: "paid", stripeCheckoutSessionId: sessionId })
+      .set({ paymentStatus: "paid", stripeCheckoutSessionId: sessionId, paidAt: new Date() })
       .where(eq(orders.id, orderId))
       .returning();
 

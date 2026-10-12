@@ -4,8 +4,8 @@
  *   counter            → the seller
  *   accept / decline   → the seller while `open`; the buyer while `countered` — except an SMS buyer,
  *                        who must answer from their phone (409 `SMS_BUYER_ONLY`).
- * After a seller moves an `sms` offer (or an accept declines competing `sms` offers), the SMS buyer is
- * texted (see `../sms/notify.ts`).
+ * After a transition the other side's phone is texted: the real SMS buyer, or the /sim buyer / seller
+ * handset, plus the buyers of competing offers an accept declined (see `../sms/notify.ts`).
  */
 import { NextResponse } from "next/server";
 import { jsonError } from "../http";
@@ -16,9 +16,8 @@ import {
   NEGOTIATION_ERROR_STATUS,
   NegotiationError,
 } from "../negotiation/db-service";
-import { notifyOfferChange, type OfferChange } from "../sms/notify";
+import { notifyTransition } from "../sms/notify";
 import { describeError } from "../sms/outbound";
-import type { Offer } from "../types";
 import { getOffer } from "./service";
 
 export type DashboardAction = "counter" | "accept" | "decline";
@@ -47,15 +46,6 @@ export function rejectCrossSite(req: Request): NextResponse | null {
     }
   }
   return null;
-}
-
-async function notifySmsBuyer(context: string, offer: Offer, change: OfferChange): Promise<void> {
-  try {
-    await notifyOfferChange(offer, change);
-  } catch (err) {
-    // The transition is committed; a failed notification must not turn it into an error.
-    console.error(`[api] ${context}: SMS buyer notification for ${offer.id} failed: ${describeError(err)}`);
-  }
 }
 
 export async function dashboardOfferTransition(
@@ -91,14 +81,8 @@ export async function dashboardOfferTransition(
           ? await acceptOffer({ offerId, actorId })
           : await declineOffer({ offerId, actorId });
 
-    if (changed) {
-      if (offer.source === "sms" && actorId === offer.sellerId) {
-        await notifySmsBuyer(context, offer, offer.status as OfferChange);
-      }
-      for (const other of declined) {
-        if (other.source === "sms") await notifySmsBuyer(context, other, "declined");
-      }
-    }
+    // The other side's phone (real SMS buyer, or a /sim handset) hears about it; never fails the request.
+    if (changed) await notifyTransition({ offer, actorId, declined });
     return NextResponse.json({ offer });
   } catch (err) {
     if (err instanceof NegotiationError) {

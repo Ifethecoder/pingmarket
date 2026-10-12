@@ -11,6 +11,8 @@ import { getDb, type Db } from "../db";
 import { listings, offers } from "../db/schema";
 import { attachCheckoutSession, getOrder, markOrderPaid, OrderError } from "../orders/service";
 import type { Order } from "../types";
+import { notifyOrderPaid } from "../sms/deliver";
+import { isPayoutClient, payoutAfterPaid, type StripePayoutClient } from "./payouts";
 
 /** The slice of the Stripe client used here; tests inject a fake. */
 export interface StripeCheckoutClient {
@@ -86,6 +88,8 @@ export async function createCheckoutSessionForOrder(
       },
     ],
     client_reference_id: order.id,
+    // Separate charges and transfers: the seller payout transfer joins this group (see payouts.ts).
+    payment_intent_data: { transfer_group: order.id, metadata: { orderId: order.id, offerId: order.offerId } },
     metadata: { orderId: order.id, offerId: order.offerId },
     success_url: successUrl,
     cancel_url: back("cancel"),
@@ -118,10 +122,16 @@ export function orderIdOfSession(session: Pick<CheckoutSessionSnapshot, "client_
  * an order reference that resolves to an existing order (and equals `expectedOrderId` when given);
  * `payment_status` "paid"; `amount_total` equal to the order amount; currency "usd". Only then calls
  * `markOrderPaid` (idempotent). Expected failures are returned, not thrown.
+ * Once the order is paid, pays the seller (`payoutSeller`) unless that already happened; a payout problem
+ * is recorded on the order and never changes this result. The first time it is paid, both sides are texted.
  */
 export async function applyPaidCheckoutSession(
   session: Omit<CheckoutSessionSnapshot, "url" | "status">,
-  { expectedOrderId, db }: { expectedOrderId?: string; db?: Db } = {},
+  {
+    expectedOrderId,
+    db,
+    payoutClient,
+  }: { expectedOrderId?: string; db?: Db; payoutClient?: StripePayoutClient } = {},
 ): Promise<ApplyPaidResult> {
   if (session.livemode) return { outcome: "rejected", reason: "livemode", order: null };
   const orderId = orderIdOfSession(session);
@@ -142,7 +152,11 @@ export async function applyPaidCheckoutSession(
   }
   try {
     const { order: paid, changed } = await markOrderPaid({ orderId: order.id, sessionId: session.id }, conn);
-    return { outcome: "paid", order: paid, changed };
+    if (paid.payoutStatus === "paid") return { outcome: "paid", order: paid, changed };
+    await payoutAfterPaid(paid.id, { stripe: payoutClient, db: conn });
+    // First time this order is paid: buyer gets a receipt, seller a sale + payout text (best effort).
+    if (changed) await notifyOrderPaid(paid.id, conn);
+    return { outcome: "paid", order: (await getOrder(paid.id, conn)) ?? paid, changed };
   } catch (err) {
     // Already paid by a different session (logged loudly by markOrderPaid).
     if (err instanceof OrderError && err.code === "SESSION_MISMATCH") {
@@ -175,8 +189,13 @@ export async function confirmOrderPayment(
   const conn = db ?? (await getDb());
   const order = await getOrder(orderId, conn);
   if (!order) throw new OrderError("ORDER_NOT_FOUND", `Order ${orderId} not found`);
+  const payoutClient = isPayoutClient(injected) ? injected : undefined;
   if (order.paymentStatus === "paid") {
-    return { order, confirmed: true, sessionStatus: null, paymentStatus: null };
+    // Already paid: Stripe is only consulted to (re)try a seller payout that has not succeeded yet,
+    // e.g. after Connect was enabled.
+    if (order.payoutStatus === "paid") return { order, confirmed: true, sessionStatus: null, paymentStatus: null };
+    await payoutAfterPaid(order.id, { stripe: payoutClient, db: conn });
+    return { order: (await getOrder(order.id, conn)) ?? order, confirmed: true, sessionStatus: null, paymentStatus: null };
   }
   const id = sessionId ?? order.stripeCheckoutSessionId;
   if (!id) return { order, confirmed: false, sessionStatus: null, paymentStatus: null, reason: "no_session" };
@@ -189,7 +208,7 @@ export async function confirmOrderPayment(
     if (isResourceMissing(err)) throw new OrderError("SESSION_NOT_FOUND", `Checkout session not found for order ${order.id}`);
     throw err;
   }
-  const result = await applyPaidCheckoutSession(session, { expectedOrderId: order.id, db: conn });
+  const result = await applyPaidCheckoutSession(session, { expectedOrderId: order.id, db: conn, payoutClient });
   const status = { sessionStatus: session.status, paymentStatus: session.payment_status };
   switch (result.outcome) {
     case "paid":
@@ -213,8 +232,14 @@ function isResourceMissing(err: unknown): boolean {
  * webhook). Returns `ORDER_NOT_PENDING` when that marked the order paid, else `PAYMENT_PROCESSING`
  * (e.g. a delayed payment method still settling).
  */
-async function completedSessionError(session: CheckoutSessionSnapshot, orderId: string, db: Db): Promise<OrderError> {
-  const result = await applyPaidCheckoutSession(session, { expectedOrderId: orderId, db });
+async function completedSessionError(
+  session: CheckoutSessionSnapshot,
+  orderId: string,
+  db: Db,
+  client: StripeCheckoutClient,
+): Promise<OrderError> {
+  const payoutClient = isPayoutClient(client) ? client : undefined;
+  const result = await applyPaidCheckoutSession(session, { expectedOrderId: orderId, db, payoutClient });
   if (result.outcome === "paid") return new OrderError("ORDER_NOT_PENDING", "Order already paid");
   return new OrderError("PAYMENT_PROCESSING", `Payment for order ${orderId} is being processed by Stripe`);
 }
@@ -253,7 +278,7 @@ export async function startCheckout(
   // `complete` on a pending order = paid but not yet recorded (or async payment processing).
   // On a `failed` order it is the session whose async payment failed, so a retry replaces it.
   if (stored?.status === "complete" && order.paymentStatus === "pending") {
-    throw await completedSessionError(stored, order.id, conn);
+    throw await completedSessionError(stored, order.id, conn, stripe);
   }
 
   const [context] = await conn
@@ -284,7 +309,7 @@ export async function startCheckout(
       await stripe.checkout.sessions.expire(stored.id);
     } catch (err) {
       const now = await stripe.checkout.sessions.retrieve(stored.id);
-      if (now.status === "complete") throw await completedSessionError(now, order.id, conn);
+      if (now.status === "complete") throw await completedSessionError(now, order.id, conn, stripe);
       if (now.status !== "expired") throw err;
     }
   }
@@ -308,7 +333,7 @@ export async function startCheckout(
   if (current.stripeCheckoutSessionId) {
     const winner = await stripe.checkout.sessions.retrieve(current.stripeCheckoutSessionId);
     if (winner.status === "open" && winner.url) return { url: winner.url, sessionId: winner.id, reused: true };
-    if (winner.status === "complete") throw await completedSessionError(winner, order.id, conn);
+    if (winner.status === "complete") throw await completedSessionError(winner, order.id, conn, stripe);
   }
   throw new Error(`Concurrent checkout for order ${order.id} left no open session; retry`);
 }

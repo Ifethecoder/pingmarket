@@ -1,0 +1,95 @@
+/*
+ * iMessage-style handsets for the SMS simulator (/sim).
+ * Bubble tails: a bubble-colored ::before curve, trimmed by a screen-colored ::after mask.
+ */
+.imsg {
+  --imsg-screen: #ffffff;
+  --imsg-ink: #000000;
+  --imsg-sent: #007aff;
+  --imsg-received: #e9e9eb;
+  --imsg-meta: #8e8e93;
+  --imsg-bar: rgb(246 246 246 / 0.94);
+  --imsg-hairline: #d1d1d6;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", var(--font-geist-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-color-scheme: dark) {
+  .imsg {
+    --imsg-screen: #000000;
+    --imsg-ink: #ffffff;
+    --imsg-sent: #0a84ff;
+    --imsg-received: #262629;
+    --imsg-meta: #8e8e93;
+    --imsg-bar: rgb(28 28 30 / 0.94);
+    --imsg-hairline: #38383a;
+  }
+}
+
+.imsg-bubble {
+  position: relative;
+  isolation: isolate;
+}
+
+.imsg-tail-sent::before,
+.imsg-tail-sent::after,
+.imsg-tail-received::before,
+.imsg-tail-received::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  bottom: 0;
+  height: 20px;
+}
+
+.imsg-tail-sent::before {
+  right: -7px;
+  width: 20px;
+  background: var(--imsg-sent);
+  border-bottom-left-radius: 16px 14px;
+}
+
+.imsg-tail-sent::after {
+  right: -26px;
+  width: 26px;
+  background: var(--imsg-screen);
+  border-bottom-left-radius: 10px;
+}
+
+.imsg-tail-received::before {
+  left: -7px;
+  width: 20px;
+  background: var(--imsg-received);
+  border-bottom-right-radius: 16px 14px;
+}
+
+.imsg-tail-received::after {
+  left: -26px;
+  width: 26px;
+  background: var(--imsg-screen);
+  border-bottom-right-radius: 10px;
+}
+
+.imsg-typing-dot {
+  animation: imsg-typing 1.2s ease-in-out infinite;
+}
+
+@keyframes imsg-typing {
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .imsg-typing-dot {
+    animation: none;
+    opacity: 0.6;
+  }
+}

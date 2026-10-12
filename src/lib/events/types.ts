@@ -12,6 +12,7 @@ export const TRACE_EVENT_KINDS = [
   "offer",
   "order_created",
   "payment",
+  "payout",
 ] as const;
 
 export type TraceEventKind = (typeof TRACE_EVENT_KINDS)[number];

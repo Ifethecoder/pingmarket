@@ -122,6 +122,8 @@ describe("startCheckout", () => {
       mode: "payment",
       client_reference_id: order.id,
       metadata: { orderId: order.id, offerId: order.offerId },
+      // Separate charges and transfers: the seller transfer joins this group.
+      payment_intent_data: { transfer_group: order.id, metadata: { orderId: order.id, offerId: order.offerId } },
       success_url: `${ORIGIN}/dashboard?checkout=success&order=${order.id}&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${ORIGIN}/dashboard?checkout=cancel&order=${order.id}`,
     });

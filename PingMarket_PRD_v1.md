@@ -37,7 +37,7 @@
 - Importing full product catalogs from third-party marketplaces without an authorized integration.
 - Assuming all Darwin agents sell products, support negotiation, or have available inventory.
 - Automated price bargaining without seller-approved limits.
-- Live seller payouts, shipping/fulfillment, dispute arbitration, escrow, or production financial onboarding.
+- Live seller payouts and settlement, shipping/fulfillment, dispute arbitration, escrow, or production financial onboarding. (Test-mode Stripe Connect transfers to sellers are implemented: separate charges and transfers in the sandbox only.)
 - Production SMS broadcasts to unregistered/opted-out personal numbers.
 
 ## 3. Users and marketplaces
@@ -234,7 +234,7 @@ Darwin adapter should use `POST https://api.darwin.so/api/v3/search` with `{ "qu
 `interests(id, buyer_id, query, max_price_cents, location, enabled)`  
 `offers(id, listing_id, buyer_id, seller_id, proposed_price_cents, status, last_actor_id, expires_at)`  
 `messages(id, dial_event_id unique, from_number, to_number, body, direction, created_at)`  
-`orders(id, offer_id unique, amount_cents, payment_status, stripe_checkout_session_id nullable)`  
+`orders(id, offer_id unique, amount_cents, payment_status, stripe_checkout_session_id nullable, paid_at, stripe_payment_intent_id, payout_status, stripe_transfer_id, payout_amount_cents, payout_currency, platform_fee_cents, payout_error, payout_at)`; `users.stripe_account_id` (test connected account)  
 `agent_searches(id, query, darwin_search_id nullable, result_metadata, created_at)`
 
 Use normalized records for transactions; do not use Keewano as the transactional source of truth.
@@ -288,7 +288,7 @@ Independent tests: Sparta Worlds | Dev coordination: Alike
 - **Consent:** Require opt-in before interest alerts, enforce `STOP`, avoid cold outreach, and keep the hackathon demo on permitted Dial-to-Dial messages.
 - **Negotiation:** Require listing ID and offer ID, participant authorization, an explicit price, clear expiry and idempotent state changes.
 - **Darwin:** Treat search results as capabilities, not verified products; show uncertainty and readiness; do not automatically execute provider actions or charge buyers.
-- **Stripe (P1):** Only hosted test-mode payment page; Mark `paid` only after the server verifies the Checkout Session with Stripe using the secret key (on return from Checkout, on demand, or via an optional signed webhook); never on link generation or the redirect URL alone. No seller payout claims without Stripe Connect.
+- **Stripe (P1):** Only hosted test-mode payment page; Mark `paid` only after the server verifies the Checkout Session with Stripe using the secret key (on return from Checkout, on demand, or via an optional signed webhook); never on link generation or the redirect URL alone. Seller payouts are test-mode Stripe Connect transfers (separate charges and transfers, funded by the order's charge); no live payouts.
 - **Availability:** Mark listings sold/reserved consistently; an accepted offer must not enable two contradictory sales.
 
 ## 12. Final demo script (3–5 minutes)

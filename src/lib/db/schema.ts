@@ -22,6 +22,7 @@ import type {
   OfferSource,
   OfferStatus,
   PaymentStatus,
+  PayoutStatus,
   UserRole,
 } from "../types";
 
@@ -52,6 +53,8 @@ export const users = pgTable("users", {
     .$type<ConsentStatus>()
     .notNull()
     .default("unknown"),
+  /** Stripe Connect test connected account (`acct_…`) that receives seller payouts. */
+  stripeAccountId: text("stripe_account_id").unique(),
   createdAt: createdAt(),
 });
 
@@ -143,6 +146,23 @@ export const orders = pgTable("orders", {
     .notNull()
     .default("pending"),
   stripeCheckoutSessionId: text("stripe_checkout_session_id"),
+  /** When the payment was confirmed (set together with `payment_status = 'paid'`). */
+  paidAt: timestamp("paid_at", { withTimezone: true }),
+  stripePaymentIntentId: text("stripe_payment_intent_id"),
+  /** Seller payout via Stripe Connect transfer (separate charges and transfers, test mode). */
+  payoutStatus: text("payout_status").$type<PayoutStatus>().notNull().default("not_started"),
+  stripeTransferId: text("stripe_transfer_id"),
+  /** Transfer amount / platform fee in minor units of `payout_currency` (the platform's settlement currency). */
+  payoutAmountCents: integer("payout_amount_cents"),
+  platformFeeCents: integer("platform_fee_cents"),
+  /** Lowercase ISO currency of the transfer, e.g. `jpy` (zero-decimal) or `usd`. */
+  payoutCurrency: text("payout_currency"),
+  /** Short `type:code message` of the last failed payout attempt; never a raw Stripe payload. */
+  payoutError: text("payout_error"),
+  /** Failed transfer attempts so far; part of the transfer idempotency key so a retry is a new request. */
+  payoutAttempts: integer("payout_attempts").notNull().default(0),
+  /** Time of the last payout outcome (paid / failed / not_configured). */
+  payoutAt: timestamp("payout_at", { withTimezone: true }),
   createdAt: createdAt(),
 });
 

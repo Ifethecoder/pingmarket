@@ -7,14 +7,16 @@ import Stripe from "stripe";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { POST as checkoutPOST } from "@/app/api/orders/[id]/checkout/route";
 import { POST as confirmPOST } from "@/app/api/orders/[id]/confirm/route";
+import { POST as payoutPOST } from "@/app/api/orders/[id]/payout/route";
 import { POST as ordersPOST } from "@/app/api/orders/route";
+import { POST as sellersPOST } from "@/app/api/stripe/sellers/route";
 import { POST as webhookPOST } from "@/app/api/stripe/webhook/route";
 import type { Db } from "../db";
-import { offers } from "../db/schema";
+import { offers, users } from "../db/schema";
 import { createTestDb } from "../db/testing";
 import { createListing, getListing } from "../listings/service";
 import { createOffer } from "../offers/service";
-import { attachCheckoutSession, getOrder, listOrders } from "../orders/service";
+import { attachCheckoutSession, getOrder, listOrders, markOrderPaid } from "../orders/service";
 import type { Order } from "../types";
 import { getStripe } from "./stripe";
 
@@ -25,6 +27,42 @@ vi.mock("@/lib/db", async (importOriginal) => ({
 }));
 
 const SECRET = "whsec_route_test_secret";
+
+/**
+ * Stubs the memoized real Stripe client (`getStripe()`) so payment confirmation + seller payout run
+ * without network: a US platform, one connected account per seller, transfers succeed, and every
+ * Checkout session is paid with an expanded charge settling `amount` USD. Call `mockRestore` via
+ * `vi.restoreAllMocks()` afterwards.
+ */
+function stubStripeForPayouts(amount: number, orderId: string) {
+  vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_route_payouts");
+  const stripe = getStripe();
+  const retrieve = vi.spyOn(stripe.checkout.sessions, "retrieve").mockImplementation((async (id: string) => ({
+    id,
+    object: "checkout.session",
+    status: "complete",
+    payment_status: "paid",
+    livemode: false,
+    client_reference_id: orderId,
+    metadata: { orderId },
+    amount_total: amount,
+    currency: "usd",
+    payment_intent: { id: `pi_${id}`, latest_charge: { id: `ch_${id}`, balance_transaction: { amount, currency: "usd" } } },
+  })) as unknown as typeof stripe.checkout.sessions.retrieve);
+  const accountsCreate = vi.spyOn(stripe.accounts, "create").mockImplementation((async (
+    params: Stripe.AccountCreateParams,
+  ) => ({ id: `acct_${(params.metadata as Record<string, string>).pingmarketUserId}` })) as unknown as typeof stripe.accounts.create);
+  vi.spyOn(stripe.accounts, "retrieve").mockImplementation((async (id: string | null) => ({
+    id: id ?? "acct_platform",
+    country: "US",
+    default_currency: "usd",
+    capabilities: { transfers: "active" },
+  })) as unknown as typeof stripe.accounts.retrieve);
+  const transfersCreate = vi.spyOn(stripe.transfers, "create").mockImplementation((async () => ({
+    id: `tr_route_${orderId}`,
+  })) as unknown as typeof stripe.transfers.create);
+  return { retrieve, accountsCreate, transfersCreate };
+}
 let db: Db;
 let eventSeq = 0;
 
@@ -339,21 +377,10 @@ describe("POST /api/orders/{id}/confirm", () => {
     );
   }
 
-  it("confirms a paid session read from Stripe with the secret key (no webhook involved)", async () => {
-    vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_route_confirm");
+  it("confirms a paid session read from Stripe with the secret key (no webhook involved) and pays the seller", async () => {
     vi.stubEnv("STRIPE_WEBHOOK_SECRET", ""); // the webhook is optional
     const order = await freshOrderWithSession(4200, "cs_test_ConfirmRoute1");
-    const retrieve = vi.spyOn(getStripe().checkout.sessions, "retrieve").mockResolvedValue({
-      id: "cs_test_ConfirmRoute1",
-      object: "checkout.session",
-      status: "complete",
-      payment_status: "paid",
-      livemode: false,
-      client_reference_id: order.id,
-      metadata: { orderId: order.id },
-      amount_total: 4200,
-      currency: "usd",
-    } as unknown as Stripe.Response<Stripe.Checkout.Session>);
+    const { retrieve, transfersCreate } = stubStripeForPayouts(4200, order.id);
     try {
       const res = await confirm(order.id, JSON.stringify({ sessionId: "cs_test_ConfirmRoute1" }));
       expect(res.status).toBe(200);
@@ -361,17 +388,18 @@ describe("POST /api/orders/{id}/confirm", () => {
         confirmed: true,
         sessionStatus: "complete",
         paymentStatus: "paid",
-        order: { id: order.id, paymentStatus: "paid" },
+        order: { id: order.id, paymentStatus: "paid", payoutStatus: "paid", payoutAmountCents: 4200 },
       });
       expect(retrieve).toHaveBeenCalledWith("cs_test_ConfirmRoute1");
+      expect(transfersCreate).toHaveBeenCalledTimes(1);
 
-      // Empty body is allowed; an already-paid order is answered without asking Stripe again.
+      // Empty body is allowed; a fully settled order is answered without asking Stripe again.
       retrieve.mockClear();
       const again = await confirm(order.id);
-      expect(await again.json()).toMatchObject({ confirmed: true, order: { paymentStatus: "paid" } });
+      expect(await again.json()).toMatchObject({ confirmed: true, order: { paymentStatus: "paid", payoutStatus: "paid" } });
       expect(retrieve).not.toHaveBeenCalled();
     } finally {
-      retrieve.mockRestore();
+      vi.restoreAllMocks();
       vi.stubEnv("STRIPE_WEBHOOK_SECRET", SECRET);
     }
   });
@@ -392,5 +420,115 @@ describe("POST /api/orders/{id}/confirm", () => {
     expect(unconfigured.status).toBe(503);
     expect(await unconfigured.json()).toMatchObject({ code: "STRIPE_NOT_CONFIGURED" });
     expect((await getOrder(order.id, db))?.paymentStatus).toBe("pending");
+  });
+});
+
+describe("seller payouts over HTTP", () => {
+  async function paidOrderWithoutPayout(priceCents: number, sessionId: string) {
+    const listing = await createListing(
+      { sellerId: "u_seller_2", marketplaceId: "furniture", title: "Payout route chair", priceCents },
+      db,
+    );
+    const offer = await createOffer({ listingId: listing.id, priceCents }, db);
+    await db.update(offers).set({ status: "accepted" }).where(eq(offers.id, offer.id));
+    const res = await ordersPOST(
+      new Request("http://localhost/api/orders", { method: "POST", body: JSON.stringify({ offerId: offer.id }) }),
+    );
+    const { order } = (await res.json()) as { order: Order };
+    await attachCheckoutSession(order.id, sessionId, null, db);
+    return order;
+  }
+
+  function payout(orderId: string) {
+    return payoutPOST(new Request(`http://localhost/api/orders/${orderId}/payout`, { method: "POST" }), {
+      params: Promise.resolve({ id: orderId }),
+    });
+  }
+
+  it("a signed paid webhook also pays the seller", async () => {
+    const order = await paidOrderWithoutPayout(3300, "cs_test_webhook_payout");
+    const { transfersCreate } = stubStripeForPayouts(3300, order.id);
+    try {
+      const res = await postWebhook(
+        sessionEvent("checkout.session.completed", {
+          id: "cs_test_webhook_payout",
+          client_reference_id: order.id,
+          payment_status: "paid",
+          amount_total: 3300,
+          currency: "usd",
+        }),
+      );
+      expect(await res.json()).toMatchObject({ paymentStatus: "paid", changed: true });
+      expect(transfersCreate).toHaveBeenCalledTimes(1);
+      expect(transfersCreate.mock.calls[0][0]).toMatchObject({
+        amount: 3300,
+        currency: "usd",
+        destination: "acct_u_seller_2",
+        transfer_group: order.id,
+        source_transaction: "ch_cs_test_webhook_payout",
+      });
+      expect(await getOrder(order.id, db)).toMatchObject({ payoutStatus: "paid", stripeTransferId: `tr_route_${order.id}` });
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("POST /api/orders/{id}/payout: 409 before payment, retries a failed payout, then is a no-op", async () => {
+    const order = await paidOrderWithoutPayout(2700, "cs_test_payout_route");
+    const notPaid = await payout(order.id);
+    expect(notPaid.status).toBe(409);
+    expect(await notPaid.json()).toMatchObject({ code: "ORDER_NOT_PAID" });
+    expect((await payout("ORD_NOPE")).status).toBe(404);
+
+    // Paid while Stripe had no test key: the payout was skipped, the payment stands.
+    await markOrderPaid({ orderId: order.id, sessionId: "cs_test_payout_route" }, db);
+    vi.stubEnv("STRIPE_SECRET_KEY", "");
+    const noKey = await payout(order.id);
+    expect(noKey.status).toBe(503);
+
+    const { transfersCreate } = stubStripeForPayouts(2700, order.id);
+    try {
+      transfersCreate.mockRejectedValueOnce(
+        new Stripe.errors.StripeInvalidRequestError({ type: "invalid_request_error", message: "Insufficient funds", code: "balance_insufficient" }),
+      );
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const failed = await payout(order.id);
+      expect(failed.status).toBe(200);
+      expect(await failed.json()).toMatchObject({ outcome: "failed", order: { paymentStatus: "paid", payoutStatus: "failed" } });
+
+      const retried = await payout(order.id);
+      expect(await retried.json()).toMatchObject({ outcome: "paid", order: { payoutStatus: "paid", payoutAmountCents: 2700 } });
+      const done = await payout(order.id);
+      expect(await done.json()).toMatchObject({ outcome: "already_paid" });
+      expect(transfersCreate).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("POST /api/stripe/sellers provisions accounts, and reports Connect being off", async () => {
+    const { accountsCreate } = stubStripeForPayouts(100, "ORD_unused");
+    try {
+      const res = await sellersPOST();
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { connectEnabled: boolean; sellers: { userId: string; accountId: string; transfers: string }[] };
+      expect(body.connectEnabled).toBe(true);
+      expect(body.sellers.length).toBeGreaterThan(0);
+      for (const seller of body.sellers) expect(seller).toMatchObject({ accountId: `acct_${seller.userId}`, transfers: "active" });
+
+      // Every seller already has an account now; with Connect off, a NEW seller reports the reason.
+      await db.insert(users).values({ id: "u_seller_new_route", role: "seller" });
+      await createListing({ sellerId: "u_seller_new_route", marketplaceId: "creative", title: "New seller print", priceCents: 900 }, db);
+      accountsCreate.mockRejectedValueOnce(
+        new Stripe.errors.StripeInvalidRequestError({ message: "You can only create new accounts if you've signed up for Connect" }),
+      );
+      const off = (await (await sellersPOST()).json()) as { connectEnabled: boolean; sellers: { userId: string; error?: string }[] };
+      expect(off.connectEnabled).toBe(false);
+      expect(off.sellers.find((s) => s.userId === "u_seller_new_route")?.error).toBe("Stripe Connect not enabled");
+    } finally {
+      vi.restoreAllMocks();
+    }
+    vi.stubEnv("STRIPE_SECRET_KEY", "sk_live_nope");
+    expect((await sellersPOST()).status).toBe(503);
   });
 });

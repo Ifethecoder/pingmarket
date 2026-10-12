@@ -1,6 +1,6 @@
 # Stripe test-mode checkout (PM-11)
 
-PingMarket takes one agreed price through a **hosted Stripe Checkout page in test mode (sandbox)**. **Only `STRIPE_SECRET_KEY` is required**: when the buyer comes back from Checkout, the server reads the Checkout Session from Stripe with the secret key and marks the order `paid` only if Stripe says it is paid. A signed webhook is an optional backstop. Generating the link, opening it, or the redirect URL alone never marks anything paid. No Stripe Connect, no payouts, no real money.
+PingMarket takes one agreed price through a **hosted Stripe Checkout page in test mode (sandbox)**. **Only `STRIPE_SECRET_KEY` is required**: when the buyer comes back from Checkout, the server reads the Checkout Session from Stripe with the secret key and marks the order `paid` only if Stripe says it is paid. A signed webhook is an optional backstop. Generating the link, opening it, or the redirect URL alone never marks anything paid. Every completed sale then makes a **second** test transaction: a Stripe Connect transfer from the platform to the seller's test connected account (see [Seller payouts](#seller-payouts-stripe-connect-test-mode)). No live payouts, no real money.
 
 ## 1. Secret key
 
@@ -105,8 +105,63 @@ Optional webhook events:
 - Duplicate deliveries are no-ops (`changed: false`). Events that can never apply (live mode, unknown order, amount mismatch, second payment) get a `200` acknowledgement so Stripe stops retrying; database errors return `500` so Stripe retries.
 - Bad or missing signatures get `400`. The raw body and card data are never logged; card details only ever exist on Stripe's hosted page.
 
+## Seller payouts (Stripe Connect, test mode)
+
+Each paid order produces two sandbox transactions, using Connect **separate charges and transfers**:
+
+1. the buyer's **payment**: the hosted Checkout charge on the platform, in USD;
+2. a **transfer to the seller**: from the platform to the seller's Custom test connected account. It is funded by that same charge (`source_transaction`), so it works even when the platform's available test balance is 0 or pending. It is grouped with the charge by `transfer_group` = order id (Checkout sets `payment_intent_data.transfer_group`).
+
+The payout runs automatically right after the payment is confirmed. That covers the return from Checkout, **Check payment status**, a repeated **Pay** click, and the optional webhook. A payout problem never affects the payment: the order stays `paid` and the payout state is shown next to it.
+
+### Enable Connect in the sandbox (one-time, in the Stripe Dashboard)
+
+1. In your **Sandbox** (or test mode), open **Connect → Get started** and choose a platform / marketplace setup.
+2. Review the platform profile at **Settings → Connect → Platform profile** (`dashboard.stripe.com/settings/connect/platform-profile`). This covers who collects requirements for connected accounts and who is liable for losses. Until it is done, Stripe refuses Custom account creation, and the app records `Review Connect platform profile: …`.
+3. If Stripe answers that Accounts v1 is not supported for new integrations, enable **Accounts v1 support** under **Settings → Developers → API policies**. The app creates Custom accounts with the v1 Accounts API.
+
+Then provision the sellers' accounts. You can skip this step, because the first payout does it:
+
+```bash
+curl -X POST http://localhost:3000/api/stripe/sellers      # against the running dev server
+npm run stripe:sellers                                      # or as a script (stop `npm run dev` first)
+npm run stripe:sellers -- --payout-pending                  # also retry payouts of paid orders
+```
+
+Each seller gets one connected account in **the platform's country** (cross-border transfers are not available to every platform). It is created with Stripe's documented test values, so no onboarding is needed:
+
+- **US platform:** test DOB / ID number, `address_full_match`, and `btok_us_verified`.
+- **JP platform:** kana and kanji name and address, the identity-document test token `file_identity_document_success`, and test bank `1100000` / `0001234`.
+
+The account id is stored on the user (`users.stripe_account_id`) and reused.
+
+### Amounts and currency
+
+The buyer pays in USD (the app's prices). The transfer is made in the platform's **settlement currency**, using the charge's balance transaction. For a JP platform, a $110.00 charge settles as about ¥16,000. The transfer is that settled gross amount minus `PLATFORM_FEE_BPS` (basis points, default `0`; `250` = 2.5%), rounded to whole minor units. The order records `payout_amount_cents` (minor units, so yen for JPY), `payout_currency`, `platform_fee_cents`, `stripe_transfer_id` and `stripe_payment_intent_id`.
+
+### Payout states
+
+| `payout_status` | Meaning | Dashboard |
+|---|---|---|
+| `not_started` | payment not confirmed yet, or no test key | — |
+| `not_configured` | Connect not enabled / platform profile not reviewed | "Seller payout: enable Stripe Connect" |
+| `failed` | Stripe refused the transfer or account (short reason in `payout_error`) | "Seller payout failed" + **Retry payout** |
+| `paid` | transfer created | "Seller paid ¥…" |
+
+Retry with **Retry payout**, **Check payment status**, `POST /api/orders/{id}/payout`, or `npm run stripe:sellers -- --payout-pending`. Retries never create a second transfer. Concurrent attempts share one idempotency key; a new key is used only after a recorded failure, because Stripe replays a failed request's error for 24 hours.
+
+### Where to see the two transactions in the Stripe Dashboard (sandbox)
+
+- Buyer payment: **Payments** (the Checkout charge; the transfer is linked from it).
+- Seller transfer: **Connect → Connected accounts → (seller) → Activity / Balances**, or **Balances → Transfers** on the platform.
+- The money stays in the connected account's **test balance**. Nothing is paid out to a bank.
+
 ## Troubleshooting
 
 - **"Stripe not configured (set STRIPE_SECRET_KEY)"** on the dashboard: the key is missing, blank or not a test-mode key. Restart `npm run dev` after editing `.env.local`.
 - **Paid on Stripe but the order stays `pending`:** click **Check payment status** in the Negotiation panel (or `curl -X POST localhost:3000/api/orders/ORD{n}/confirm`). If you use the optional webhook: check that `stripe listen` is running and `STRIPE_WEBHOOK_SECRET` matches the secret it printed. The CLI output shows the HTTP status for each forwarded event (`400` = signature mismatch, `503` = secret missing).
 - **Amounts under $0.50:** Stripe rejects Checkout totals below its minimum charge amount, so checkout fails for very small offers.
+- **Switched `STRIPE_SECRET_KEY` to another Stripe account or sandbox:** orders paid under the old account keep their old Checkout session ids, which the new account cannot see. Confirming them returns `404 SESSION_NOT_FOUND`, and their seller payout is recorded as `failed` ("Checkout session not found in this Stripe account …") instead of erroring. Start a new order to test the new account. Connected account ids stored on users belong to the old account too. If a transfer then fails with "No such destination", clear `users.stripe_account_id` for that seller (or delete `./.pglite`) and retry.
+- **"Seller payout: enable Stripe Connect":** finish "Enable Connect in the sandbox" above, then click **Check payment status** or **Retry payout**, or call `POST /api/orders/{id}/payout`.
+- **`npm run stripe:sellers` says the database is in use:** the embedded PGlite database (`./.pglite`) can only be opened by one process. Stop `npm run dev`, or use `curl -X POST localhost:3000/api/stripe/sellers` against the running server.
+

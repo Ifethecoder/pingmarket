@@ -21,6 +21,8 @@ export type OfferStatus = "open" | "countered" | "accepted" | "declined" | "expi
 export type OfferSource = "sms" | "web_simulated";
 
 export type PaymentStatus = "pending" | "paid" | "failed";
+/** Seller payout (Stripe Connect test transfer). `not_configured` = Connect not enabled on the platform. */
+export type PayoutStatus = "not_started" | "not_configured" | "paid" | "failed";
 export type MessageDirection = "inbound" | "outbound";
 
 export interface Marketplace {
@@ -75,6 +77,16 @@ export interface Order {
   amountCents: number;
   paymentStatus: PaymentStatus;
   stripeCheckoutSessionId: string | null;
+  paidAt: string | null;
+  stripePaymentIntentId: string | null;
+  payoutStatus: PayoutStatus;
+  stripeTransferId: string | null;
+  /** Minor units of `payoutCurrency` (the platform's settlement currency; JPY has no decimals). */
+  payoutAmountCents: number | null;
+  platformFeeCents: number | null;
+  payoutCurrency: string | null;
+  payoutError: string | null;
+  payoutAt: string | null;
   createdAt: string;
 }
 
